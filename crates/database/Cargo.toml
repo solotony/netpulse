@@ -7,3 +7,15 @@ authors.workspace = true
 description = "SQLite persistence, migrations, and historical queries"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "migrate",
+    "chrono",
+    "macros",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
