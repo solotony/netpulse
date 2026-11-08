@@ -7,3 +7,5 @@ authors.workspace = true
 description = "Shared types and utilities for Network Monitor"
 
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
