@@ -4401,6 +4401,12 @@ checksum = "ff7589a1859b09232522bb9edf076ca7fcf14ded96685d3fa629db73023ffbb7"
 [[package]]
 name = "statistics"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "database",
+ "sqlx",
+ "tokio",
+]
 
 [[package]]
 name = "string_cache"

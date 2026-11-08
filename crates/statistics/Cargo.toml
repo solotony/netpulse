@@ -7,3 +7,13 @@ authors.workspace = true
 description = "Historical aggregation by process, IP, domain, network, and time"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+database = { path = "../database" }
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "chrono",
+] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
