@@ -7,4 +7,14 @@ authors.workspace = true
 description = "macOS network connection collector (libproc polling)"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 collector-api = { path = "../collector-api" }
+common = { path = "../common" }
+process-info = { path = "../process-info" }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }

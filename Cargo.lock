@@ -514,7 +514,12 @@ dependencies = [
 name = "collector-macos"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "collector-api",
+ "common",
+ "libc",
+ "process-info",
+ "tokio",
 ]
 
 [[package]]
