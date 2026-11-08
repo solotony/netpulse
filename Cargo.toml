@@ -1,0 +1,21 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/common",
+    "crates/core",
+    "crates/collector-api",
+    "crates/collector-macos",
+    "crates/collector-linux",
+    "crates/collector-windows",
+    "crates/process-info",
+    "crates/dns-resolver",
+    "crates/ip-enrichment",
+    "crates/database",
+    "crates/statistics",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Network Monitor"]

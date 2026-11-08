@@ -1,0 +1,9 @@
+[package]
+name = "collector-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Common interface for platform network collectors"
+
+[dependencies]
