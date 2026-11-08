@@ -7,3 +7,5 @@ authors.workspace = true
 description = "Common interface for platform network collectors"
 
 [dependencies]
+common = { path = "../common" }
+tokio = { version = "1", features = ["sync"] }

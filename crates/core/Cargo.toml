@@ -7,3 +7,7 @@ authors.workspace = true
 description = "Application lifecycle, collector management, and event coordination"
 
 [dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+collector-api = { path = "../collector-api" }
+common = { path = "../common" }
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }

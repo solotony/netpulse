@@ -1,5 +1,9 @@
 //! Application lifecycle, collector management, and event coordination.
 
+mod mock_collector;
+
+pub use mock_collector::MockCollector;
+
 /// Crate identity used by unit tests and diagnostics.
 pub const CRATE_NAME: &str = "core";
 
