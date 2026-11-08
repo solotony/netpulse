@@ -2,6 +2,7 @@
 
 mod error;
 mod models;
+mod queries;
 mod settings;
 mod writes;
 
@@ -14,6 +15,11 @@ pub use error::DatabaseError;
 pub use models::{
     ConnectionRow, ConnectionUpdate, DomainRow, IpAddressRow, IpDomainRow, NetworkRow,
     NewConnection, NewIpDomain, NewNetwork, NewProcess, ProcessRow, ProcessUpdate,
+};
+pub use queries::{
+    query_connection_history, ConnectionHistoryFilter, ConnectionHistoryPage,
+    ConnectionHistoryQuery, ConnectionHistoryRow, ConnectionSortColumn, SortDirection,
+    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
 };
 pub use settings::{
     ensure_default_settings, get_bool_setting, get_setting, set_bool_setting, set_setting,
@@ -141,6 +147,14 @@ impl Database {
         .fetch_optional(&self.pool)
         .await?;
         Ok(row)
+    }
+
+    /// Filtered, sorted, paginated connection history (never loads the full table).
+    pub async fn query_connection_history(
+        &self,
+        query: &ConnectionHistoryQuery,
+    ) -> Result<ConnectionHistoryPage, DatabaseError> {
+        queries::query_connection_history(&self.pool, query).await
     }
 }
 
