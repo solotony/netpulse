@@ -2,8 +2,13 @@
 
 use sqlx::{SqliteExecutor, SqlitePool};
 
+use chrono::{DateTime, Utc};
+
 use crate::error::DatabaseError;
-use crate::models::{ConnectionUpdate, NewConnection, NewProcess, ProcessUpdate};
+use crate::models::{
+    ConnectionUpdate, IpAddressRow, NetworkRow, NewConnection, NewNetwork, NewProcess,
+    ProcessUpdate,
+};
 
 /// Inserts a new process row. Returns the new primary key.
 pub async fn insert_process<'e, E>(executor: E, process: &NewProcess) -> Result<i64, DatabaseError>
@@ -294,4 +299,217 @@ pub async fn insert_connection_for_process(
     let connection_id = insert_connection(&mut *tx, &connection).await?;
     tx.commit().await?;
     Ok((process_id, connection_id))
+}
+
+/// Upserts an IP address by exact `ip` string. Extends `last_seen_at` when newer.
+pub async fn upsert_ip_address<'e, E>(
+    executor: E,
+    ip: &str,
+    seen_at: DateTime<Utc>,
+) -> Result<i64, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO ip_addresses (ip, first_seen_at, last_seen_at)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT (ip) DO UPDATE SET
+            last_seen_at = CASE
+                WHEN excluded.last_seen_at > ip_addresses.last_seen_at THEN excluded.last_seen_at
+                ELSE ip_addresses.last_seen_at
+            END
+        RETURNING id
+        "#,
+    )
+    .bind(ip)
+    .bind(seen_at)
+    .bind(seen_at)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(id)
+}
+
+/// Inserts or updates a network row keyed by unique `cidr`, refreshing `updated_at`.
+pub async fn upsert_network<'e, E>(
+    executor: E,
+    network: &NewNetwork,
+) -> Result<i64, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO networks (
+            cidr, net_range, net_name, organization, asn, country, source, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        ON CONFLICT (cidr) DO UPDATE SET
+            net_range = COALESCE(excluded.net_range, networks.net_range),
+            net_name = COALESCE(excluded.net_name, networks.net_name),
+            organization = COALESCE(excluded.organization, networks.organization),
+            asn = COALESCE(excluded.asn, networks.asn),
+            country = COALESCE(excluded.country, networks.country),
+            source = COALESCE(excluded.source, networks.source),
+            updated_at = excluded.updated_at
+        RETURNING id
+        "#,
+    )
+    .bind(&network.cidr)
+    .bind(&network.net_range)
+    .bind(&network.net_name)
+    .bind(&network.organization)
+    .bind(network.asn)
+    .bind(&network.country)
+    .bind(&network.source)
+    .bind(network.updated_at)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(id)
+}
+
+/// Loads a network by primary key.
+pub async fn get_network<'e, E>(
+    executor: E,
+    id: i64,
+) -> Result<Option<NetworkRow>, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, NetworkRow>(
+        r#"
+        SELECT id, cidr, net_range, net_name, organization, asn, country, source, updated_at
+        FROM networks
+        WHERE id = ?1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
+}
+
+/// Loads all stored networks (for longest-prefix matching in callers).
+pub async fn list_networks<'e, E>(executor: E) -> Result<Vec<NetworkRow>, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let rows = sqlx::query_as::<_, NetworkRow>(
+        r#"
+        SELECT id, cidr, net_range, net_name, organization, asn, country, source, updated_at
+        FROM networks
+        ORDER BY id
+        "#,
+    )
+    .fetch_all(executor)
+    .await?;
+    Ok(rows)
+}
+
+/// Replaces any existing network associations for `ip_id` with a single winning network.
+///
+/// One IP maps to the most specific applicable prefix only.
+pub async fn set_ip_winning_network(
+    pool: &SqlitePool,
+    ip_id: i64,
+    network_id: i64,
+) -> Result<(), DatabaseError> {
+    let mut tx = pool.begin().await?;
+
+    sqlx::query("DELETE FROM ip_networks WHERE ip_id = ?1")
+        .bind(ip_id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO ip_networks (ip_id, network_id)
+        VALUES (?1, ?2)
+        "#,
+    )
+    .bind(ip_id)
+    .bind(network_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Returns the single winning network associated with `ip_id`, if any.
+pub async fn get_ip_winning_network<'e, E>(
+    executor: E,
+    ip_id: i64,
+) -> Result<Option<NetworkRow>, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, NetworkRow>(
+        r#"
+        SELECT n.id, n.cidr, n.net_range, n.net_name, n.organization, n.asn,
+               n.country, n.source, n.updated_at
+        FROM ip_networks AS link
+        JOIN networks AS n ON n.id = link.network_id
+        WHERE link.ip_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(ip_id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
+}
+
+/// Upserts network + IP rows and stores the winning association in one transaction.
+pub async fn store_winning_ip_network(
+    pool: &SqlitePool,
+    ip: &str,
+    network: &NewNetwork,
+    seen_at: DateTime<Utc>,
+) -> Result<(i64, i64), DatabaseError> {
+    let mut tx = pool.begin().await?;
+    let network_id = upsert_network(&mut *tx, network).await?;
+    let ip_id = upsert_ip_address(&mut *tx, ip, seen_at).await?;
+
+    sqlx::query("DELETE FROM ip_networks WHERE ip_id = ?1")
+        .bind(ip_id)
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO ip_networks (ip_id, network_id)
+        VALUES (?1, ?2)
+        "#,
+    )
+    .bind(ip_id)
+    .bind(network_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok((ip_id, network_id))
+}
+
+/// Loads an IP address row by primary key.
+pub async fn get_ip_address<'e, E>(
+    executor: E,
+    id: i64,
+) -> Result<Option<IpAddressRow>, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, IpAddressRow>(
+        r#"
+        SELECT id, ip, first_seen_at, last_seen_at
+        FROM ip_addresses
+        WHERE id = ?1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
 }

@@ -7,3 +7,4 @@ authors.workspace = true
 description = "Asynchronous IP registration and network enrichment"
 
 [dependencies]
+ipnet = "2.12"

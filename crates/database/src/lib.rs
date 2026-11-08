@@ -12,16 +12,18 @@ use sqlx::{ConnectOptions, SqlitePool};
 
 pub use error::DatabaseError;
 pub use models::{
-    ConnectionRow, ConnectionUpdate, NewConnection, NewProcess, ProcessRow, ProcessUpdate,
+    ConnectionRow, ConnectionUpdate, IpAddressRow, NetworkRow, NewConnection, NewNetwork,
+    NewProcess, ProcessRow, ProcessUpdate,
 };
 pub use settings::{
     ensure_default_settings, get_bool_setting, get_setting, set_bool_setting, set_setting,
     SETTING_AUTOSTART, SETTING_BACKGROUND_MODE, SETTING_START_MONITORING_AUTOMATICALLY,
 };
 pub use writes::{
-    find_open_connection, insert_connection, insert_connection_event,
-    insert_connection_for_process, insert_process, update_connection, update_connection_exec,
-    update_process, upsert_process,
+    find_open_connection, get_ip_address, get_ip_winning_network, get_network, insert_connection,
+    insert_connection_event, insert_connection_for_process, insert_process, list_networks,
+    set_ip_winning_network, store_winning_ip_network, update_connection, update_connection_exec,
+    update_process, upsert_ip_address, upsert_network, upsert_process,
 };
 
 /// Crate identity used by unit tests and diagnostics.
@@ -408,5 +410,121 @@ mod tests {
         .await
         .expect("pid reuse");
         assert_ne!(reused_id, process_id);
+    }
+
+    #[tokio::test]
+    async fn upsert_network_updates_fields_and_timestamp() {
+        let db = Database::open_in_memory().await.expect("open");
+        let t1 = Utc.with_ymd_and_hms(2024, 6, 1, 12, 0, 0).unwrap();
+        let t2 = Utc.with_ymd_and_hms(2024, 6, 2, 12, 0, 0).unwrap();
+
+        let id = upsert_network(
+            db.pool(),
+            &NewNetwork {
+                cidr: "203.0.113.0/24".into(),
+                net_range: Some("203.0.113.0 - 203.0.113.255".into()),
+                net_name: Some("TEST-NET-3".into()),
+                organization: Some("Example Org".into()),
+                asn: Some(64500),
+                country: Some("US".into()),
+                source: Some("local".into()),
+                updated_at: t1,
+            },
+        )
+        .await
+        .expect("insert network");
+
+        let again = upsert_network(
+            db.pool(),
+            &NewNetwork {
+                cidr: "203.0.113.0/24".into(),
+                net_range: None,
+                net_name: Some("TEST-NET-3-UPDATED".into()),
+                organization: None,
+                asn: Some(64501),
+                country: None,
+                source: Some("local".into()),
+                updated_at: t2,
+            },
+        )
+        .await
+        .expect("update network");
+        assert_eq!(again, id);
+
+        let row = get_network(db.pool(), id).await.expect("get").expect("row");
+        assert_eq!(row.cidr, "203.0.113.0/24");
+        assert_eq!(row.net_name.as_deref(), Some("TEST-NET-3-UPDATED"));
+        assert_eq!(row.organization.as_deref(), Some("Example Org"));
+        assert_eq!(row.asn, Some(64501));
+        assert_eq!(row.updated_at, t2);
+    }
+
+    #[tokio::test]
+    async fn store_winning_ip_network_keeps_single_association() {
+        let db = Database::open_in_memory().await.expect("open");
+        let seen = Utc.with_ymd_and_hms(2024, 7, 1, 0, 0, 0).unwrap();
+
+        let broad = upsert_network(
+            db.pool(),
+            &NewNetwork {
+                cidr: "198.51.100.0/24".into(),
+                net_range: None,
+                net_name: Some("broad".into()),
+                organization: None,
+                asn: None,
+                country: None,
+                source: Some("local".into()),
+                updated_at: seen,
+            },
+        )
+        .await
+        .expect("broad");
+
+        let specific = NewNetwork {
+            cidr: "198.51.100.0/28".into(),
+            net_range: None,
+            net_name: Some("specific".into()),
+            organization: Some("Winner".into()),
+            asn: None,
+            country: None,
+            source: Some("local".into()),
+            updated_at: seen + chrono::Duration::hours(1),
+        };
+
+        let (ip_id, network_id) =
+            store_winning_ip_network(db.pool(), "198.51.100.10", &specific, seen)
+                .await
+                .expect("store winner");
+        assert_ne!(network_id, broad);
+
+        // Associate the broader prefix first, then replace with the winner.
+        set_ip_winning_network(db.pool(), ip_id, broad)
+            .await
+            .expect("set broad");
+        set_ip_winning_network(db.pool(), ip_id, network_id)
+            .await
+            .expect("set specific");
+
+        let winner = get_ip_winning_network(db.pool(), ip_id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(winner.id, network_id);
+        assert_eq!(winner.cidr, "198.51.100.0/28");
+        assert_eq!(winner.net_name.as_deref(), Some("specific"));
+
+        let link_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM ip_networks WHERE ip_id = ?1")
+                .bind(ip_id)
+                .fetch_one(db.pool())
+                .await
+                .expect("count");
+        assert_eq!(link_count, 1);
+
+        let ip_row = get_ip_address(db.pool(), ip_id)
+            .await
+            .expect("get ip")
+            .expect("row");
+        assert_eq!(ip_row.ip, "198.51.100.10");
     }
 }

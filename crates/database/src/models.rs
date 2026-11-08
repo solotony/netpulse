@@ -79,3 +79,39 @@ pub struct ConnectionRow {
     pub bytes_received: Option<i64>,
     pub collector_id: Option<String>,
 }
+
+/// Input for upserting a network registration prefix.
+#[derive(Debug, Clone)]
+pub struct NewNetwork {
+    pub cidr: String,
+    pub net_range: Option<String>,
+    pub net_name: Option<String>,
+    pub organization: Option<String>,
+    pub asn: Option<i64>,
+    pub country: Option<String>,
+    pub source: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Stored network row.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct NetworkRow {
+    pub id: i64,
+    pub cidr: String,
+    pub net_range: Option<String>,
+    pub net_name: Option<String>,
+    pub organization: Option<String>,
+    pub asn: Option<i64>,
+    pub country: Option<String>,
+    pub source: Option<String>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Stored IP address row.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct IpAddressRow {
+    pub id: i64,
+    pub ip: String,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
