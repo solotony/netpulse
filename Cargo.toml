@@ -12,6 +12,7 @@ members = [
     "crates/ip-enrichment",
     "crates/database",
     "crates/statistics",
+    "apps/desktop/src-tauri",
 ]
 
 [workspace.package]

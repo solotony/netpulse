@@ -1,0 +1,35 @@
+[package]
+name = "network-monitor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Network Monitor desktop application (Tauri)"
+
+[lib]
+name = "network_monitor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+collector-api = { path = "../../../crates/collector-api" }
+common = { path = "../../../crates/common" }
+# Renamed: a dep named `core` shadows `::core` and breaks tokio/tauri macros.
+monitor-core = { package = "core", path = "../../../crates/core" }
+database = { path = "../../../crates/database" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio",
+    "sqlite",
+    "chrono",
+] }
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
