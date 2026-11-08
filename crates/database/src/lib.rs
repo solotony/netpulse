@@ -17,7 +17,8 @@ pub use models::{
 };
 pub use settings::{
     ensure_default_settings, get_bool_setting, get_setting, set_bool_setting, set_setting,
-    SETTING_AUTOSTART, SETTING_BACKGROUND_MODE, SETTING_START_MONITORING_AUTOMATICALLY,
+    SETTING_AUTOSTART, SETTING_BACKGROUND_MODE, SETTING_IP_ENRICHMENT,
+    SETTING_START_MONITORING_AUTOMATICALLY,
 };
 pub use writes::{
     find_open_connection, get_ip_address, get_ip_winning_network, get_network, insert_connection,

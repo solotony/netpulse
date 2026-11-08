@@ -1,17 +1,27 @@
 //! Asynchronous IP registration and network enrichment.
 //!
-//! Step 10 covers local classification and longest-prefix matching only.
-//! Public registration lookup (RDAP) is Step 11.
+//! Local classification and longest-prefix matching (Step 10) plus optional
+//! asynchronous RDAP lookups (Step 11). Reverse DNS is Step 12.
 
 mod classify;
+mod error;
+mod http;
 mod match_prefix;
+mod rdap;
+mod worker;
 
 pub use classify::{
     classify, requires_public_lookup, IpClass, SpecialUseClass,
 };
+pub use error::EnrichmentError;
+pub use http::{HttpClient, ReqwestHttpClient};
 pub use match_prefix::{
     longest_prefix_match, parse_cidr, CidrParseError, NetworkPrefix,
 };
+pub use rdap::{
+    parse_rdap_ip_network, RdapClient, RdapClientConfig, RdapNetworkInfo, DEFAULT_RDAP_URL_TEMPLATE,
+};
+pub use worker::{EnrichmentConfig, EnrichmentHandle, EnrichmentWorker};
 
 /// Crate identity used by unit tests and diagnostics.
 pub const CRATE_NAME: &str = "ip-enrichment";

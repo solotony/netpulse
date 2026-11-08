@@ -10,6 +10,8 @@ pub const SETTING_AUTOSTART: &str = "autostart";
 pub const SETTING_START_MONITORING_AUTOMATICALLY: &str = "start_monitoring_automatically";
 /// Setting: hide to tray on window close instead of quitting.
 pub const SETTING_BACKGROUND_MODE: &str = "background_mode";
+/// Setting: perform asynchronous IP enrichment (RDAP) for public remote IPs.
+pub const SETTING_IP_ENRICHMENT: &str = "ip_enrichment";
 
 const DEFAULT_TRUE: &str = "true";
 const DEFAULT_FALSE: &str = "false";
@@ -72,6 +74,7 @@ pub async fn ensure_default_settings(pool: &SqlitePool) -> Result<(), DatabaseEr
         (SETTING_AUTOSTART, DEFAULT_FALSE),
         (SETTING_START_MONITORING_AUTOMATICALLY, DEFAULT_FALSE),
         (SETTING_BACKGROUND_MODE, DEFAULT_TRUE),
+        (SETTING_IP_ENRICHMENT, DEFAULT_TRUE),
     ] {
         sqlx::query(
             r#"
