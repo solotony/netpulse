@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 import ConnectionsPage from "../pages/ConnectionsPage.vue";
 import PlaceholderPage from "../pages/PlaceholderPage.vue";
+import SettingsPage from "../pages/SettingsPage.vue";
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -45,7 +46,7 @@ export const router = createRouter({
     {
       path: "/settings",
       name: "settings",
-      component: PlaceholderPage,
+      component: SettingsPage,
       meta: { title: "Settings" },
     },
   ],

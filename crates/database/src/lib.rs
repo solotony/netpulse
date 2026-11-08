@@ -2,6 +2,7 @@
 
 mod error;
 mod models;
+mod settings;
 mod writes;
 
 use std::path::Path;
@@ -12,6 +13,10 @@ use sqlx::{ConnectOptions, SqlitePool};
 pub use error::DatabaseError;
 pub use models::{
     ConnectionRow, ConnectionUpdate, NewConnection, NewProcess, ProcessRow, ProcessUpdate,
+};
+pub use settings::{
+    ensure_default_settings, get_bool_setting, get_setting, set_bool_setting, set_setting,
+    SETTING_AUTOSTART, SETTING_BACKGROUND_MODE, SETTING_START_MONITORING_AUTOMATICALLY,
 };
 pub use writes::{
     find_open_connection, insert_connection, insert_connection_event,
@@ -49,6 +54,7 @@ impl Database {
 
         let db = Self { pool };
         db.migrate().await?;
+        ensure_default_settings(db.pool()).await?;
         Ok(db)
     }
 
@@ -69,6 +75,7 @@ impl Database {
 
         let db = Self { pool };
         db.migrate().await?;
+        ensure_default_settings(db.pool()).await?;
         Ok(db)
     }
 
@@ -159,6 +166,7 @@ mod tests {
             "ip_domains",
             "networks",
             "ip_networks",
+            "settings",
         ] {
             let name: Option<String> = sqlx::query_scalar(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -169,6 +177,37 @@ mod tests {
             .expect("query sqlite_master");
             assert_eq!(name.as_deref(), Some(table), "missing table {table}");
         }
+
+        assert!(
+            !get_bool_setting(db.pool(), SETTING_AUTOSTART, true)
+                .await
+                .expect("autostart default")
+        );
+        assert!(
+            get_bool_setting(db.pool(), SETTING_BACKGROUND_MODE, false)
+                .await
+                .expect("background default")
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_round_trip() {
+        let db = Database::open_in_memory().await.expect("open");
+        set_bool_setting(db.pool(), SETTING_AUTOSTART, true)
+            .await
+            .expect("set");
+        assert!(
+            get_bool_setting(db.pool(), SETTING_AUTOSTART, false)
+                .await
+                .expect("get")
+        );
+        set_setting(db.pool(), "custom", "value")
+            .await
+            .expect("set custom");
+        assert_eq!(
+            get_setting(db.pool(), "custom").await.expect("get custom"),
+            Some("value".into())
+        );
     }
 
     #[tokio::test]

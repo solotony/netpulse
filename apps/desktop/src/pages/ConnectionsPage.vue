@@ -2,11 +2,14 @@
 import { onMounted } from "vue";
 import AppShell from "../layouts/AppShell.vue";
 import { useConnectionsStore } from "../stores/connections";
+import { useMonitoringStore } from "../stores/monitoring";
 
 const store = useConnectionsStore();
+const monitoring = useMonitoringStore();
 
 onMounted(() => {
   void store.load();
+  void monitoring.refreshStatus();
 });
 </script>
 
@@ -18,6 +21,9 @@ onMounted(() => {
       </button>
       <span v-if="store.page" class="meta">
         {{ store.page.total }} connection{{ store.page.total === 1 ? "" : "s" }}
+      </span>
+      <span class="collector" :data-state="monitoring.status?.state ?? 'stopped'">
+        Collector: {{ monitoring.status?.state ?? "stopped" }}
       </span>
     </div>
 
@@ -91,10 +97,31 @@ onMounted(() => {
 }
 
 .meta,
+.collector,
 .error,
 .empty {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.collector {
+  margin-left: auto;
+  text-transform: lowercase;
+}
+
+.collector[data-state="running"] {
+  color: var(--status-active);
+  font-weight: 600;
+}
+
+.collector[data-state="paused"] {
+  color: #a15c00;
+  font-weight: 600;
+}
+
+.collector[data-state="failed"] {
+  color: #b42318;
+  font-weight: 600;
 }
 
 .error {

@@ -11,9 +11,11 @@ chrono = { version = "0.4", features = ["serde"] }
 collector-api = { path = "../collector-api" }
 common = { path = "../common" }
 database = { path = "../database" }
+serde = { version = "1", features = ["derive"] }
 sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio",
     "sqlite",
     "chrono",
 ] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"

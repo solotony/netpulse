@@ -1,9 +1,13 @@
 //! Application lifecycle, collector management, and event coordination.
 
 mod mock_collector;
+mod monitoring;
 mod pipeline;
 
 pub use mock_collector::MockCollector;
+pub use monitoring::{
+    MonitoringController, MonitoringError, MonitoringState, MonitoringStatus,
+};
 pub use pipeline::{EventPipeline, PipelineError, ProcessOutcome};
 
 /// Crate identity used by unit tests and diagnostics.

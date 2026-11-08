@@ -4,6 +4,7 @@
 //! event list and does not observe the host network stack.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use collector_api::{
     CollectorCapabilities, CollectorError, NetworkCollector, Platform,
@@ -22,6 +23,7 @@ pub struct MockCollector {
     capabilities: CollectorCapabilities,
     events: Vec<ConnectionEvent>,
     start_failure: Option<CollectorError>,
+    emit_delay: Option<Duration>,
     running: bool,
     /// Shared so a prior emit task can observe stop and exit cleanly.
     stop_flag: Arc<Mutex<bool>>,
@@ -36,6 +38,7 @@ impl MockCollector {
             capabilities: CollectorCapabilities::all(),
             events,
             start_failure: None,
+            emit_delay: None,
             running: false,
             stop_flag: Arc::new(Mutex::new(false)),
             emit_task: None,
@@ -62,6 +65,12 @@ impl MockCollector {
     /// (restart / recovery scenarios).
     pub fn fail_next_start(mut self, error: CollectorError) -> Self {
         self.start_failure = Some(error);
+        self
+    }
+
+    /// Waits `delay` before each scripted event (useful for pause/resume tests).
+    pub fn with_emit_delay(mut self, delay: Duration) -> Self {
+        self.emit_delay = Some(delay);
         self
     }
 
@@ -99,11 +108,18 @@ impl NetworkCollector for MockCollector {
         *self.stop_flag.lock().await = false;
         let stop_flag = Arc::clone(&self.stop_flag);
         let events = self.events.clone();
+        let emit_delay = self.emit_delay;
 
         self.emit_task = Some(tokio::spawn(async move {
             for event in events {
                 if *stop_flag.lock().await {
                     break;
+                }
+                if let Some(delay) = emit_delay {
+                    tokio::time::sleep(delay).await;
+                    if *stop_flag.lock().await {
+                        break;
+                    }
                 }
                 if event_tx.send(event).await.is_err() {
                     break;
