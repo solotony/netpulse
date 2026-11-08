@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 
 use crate::error::DatabaseError;
 use crate::models::{
-    ConnectionUpdate, IpAddressRow, NetworkRow, NewConnection, NewNetwork, NewProcess,
-    ProcessUpdate,
+    ConnectionUpdate, DomainRow, IpAddressRow, IpDomainRow, NetworkRow, NewConnection, NewIpDomain,
+    NewNetwork, NewProcess, ProcessUpdate,
 };
 
 /// Inserts a new process row. Returns the new primary key.
@@ -512,4 +512,137 @@ where
     .fetch_optional(executor)
     .await?;
     Ok(row)
+}
+
+/// Upserts a domain name by exact `domain` string. Extends `last_seen_at` when newer.
+pub async fn upsert_domain<'e, E>(
+    executor: E,
+    domain: &str,
+    seen_at: DateTime<Utc>,
+) -> Result<i64, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO domains (domain, first_seen_at, last_seen_at)
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT (domain) DO UPDATE SET
+            last_seen_at = CASE
+                WHEN excluded.last_seen_at > domains.last_seen_at THEN excluded.last_seen_at
+                ELSE domains.last_seen_at
+            END
+        RETURNING id
+        "#,
+    )
+    .bind(domain)
+    .bind(seen_at)
+    .bind(seen_at)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(id)
+}
+
+/// Loads a domain row by primary key.
+pub async fn get_domain<'e, E>(
+    executor: E,
+    id: i64,
+) -> Result<Option<DomainRow>, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, DomainRow>(
+        r#"
+        SELECT id, domain, first_seen_at, last_seen_at
+        FROM domains
+        WHERE id = ?1
+        "#,
+    )
+    .bind(id)
+    .fetch_optional(executor)
+    .await?;
+    Ok(row)
+}
+
+/// Upserts IP + domain rows and links them under `source` (multiple domains per IP allowed).
+pub async fn upsert_ip_domain(
+    pool: &SqlitePool,
+    link: &NewIpDomain,
+) -> Result<(i64, i64), DatabaseError> {
+    let mut tx = pool.begin().await?;
+
+    let ip_id = upsert_ip_address(&mut *tx, &link.ip, link.seen_at).await?;
+    let domain_id = upsert_domain(&mut *tx, &link.domain, link.seen_at).await?;
+
+    sqlx::query(
+        r#"
+        INSERT INTO ip_domains (
+            ip_id, domain_id, source, first_seen_at, last_seen_at, confidence
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        ON CONFLICT (ip_id, domain_id, source) DO UPDATE SET
+            last_seen_at = CASE
+                WHEN excluded.last_seen_at > ip_domains.last_seen_at THEN excluded.last_seen_at
+                ELSE ip_domains.last_seen_at
+            END,
+            confidence = COALESCE(excluded.confidence, ip_domains.confidence)
+        "#,
+    )
+    .bind(ip_id)
+    .bind(domain_id)
+    .bind(&link.source)
+    .bind(link.seen_at)
+    .bind(link.seen_at)
+    .bind(link.confidence)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok((ip_id, domain_id))
+}
+
+/// Lists domain associations for an IP (all sources).
+pub async fn list_ip_domains<'e, E>(
+    executor: E,
+    ip_id: i64,
+) -> Result<Vec<IpDomainRow>, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let rows = sqlx::query_as::<_, IpDomainRow>(
+        r#"
+        SELECT ip_id, domain_id, source, first_seen_at, last_seen_at, confidence
+        FROM ip_domains
+        WHERE ip_id = ?1
+        ORDER BY domain_id, source
+        "#,
+    )
+    .bind(ip_id)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows)
+}
+
+/// Lists domain names linked to `ip_id`.
+pub async fn list_domains_for_ip<'e, E>(
+    executor: E,
+    ip_id: i64,
+) -> Result<Vec<DomainRow>, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let rows = sqlx::query_as::<_, DomainRow>(
+        r#"
+        SELECT d.id, d.domain, d.first_seen_at, d.last_seen_at
+        FROM ip_domains AS link
+        JOIN domains AS d ON d.id = link.domain_id
+        WHERE link.ip_id = ?1
+        ORDER BY d.domain
+        "#,
+    )
+    .bind(ip_id)
+    .fetch_all(executor)
+    .await?;
+    Ok(rows)
 }

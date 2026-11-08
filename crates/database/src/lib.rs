@@ -12,8 +12,8 @@ use sqlx::{ConnectOptions, SqlitePool};
 
 pub use error::DatabaseError;
 pub use models::{
-    ConnectionRow, ConnectionUpdate, IpAddressRow, NetworkRow, NewConnection, NewNetwork,
-    NewProcess, ProcessRow, ProcessUpdate,
+    ConnectionRow, ConnectionUpdate, DomainRow, IpAddressRow, IpDomainRow, NetworkRow,
+    NewConnection, NewIpDomain, NewNetwork, NewProcess, ProcessRow, ProcessUpdate,
 };
 pub use settings::{
     ensure_default_settings, get_bool_setting, get_setting, set_bool_setting, set_setting,
@@ -21,10 +21,11 @@ pub use settings::{
     SETTING_START_MONITORING_AUTOMATICALLY,
 };
 pub use writes::{
-    find_open_connection, get_ip_address, get_ip_winning_network, get_network, insert_connection,
-    insert_connection_event, insert_connection_for_process, insert_process, list_networks,
-    set_ip_winning_network, store_winning_ip_network, update_connection, update_connection_exec,
-    update_process, upsert_ip_address, upsert_network, upsert_process,
+    find_open_connection, get_domain, get_ip_address, get_ip_winning_network, get_network,
+    insert_connection, insert_connection_event, insert_connection_for_process, insert_process,
+    list_domains_for_ip, list_ip_domains, list_networks, set_ip_winning_network,
+    store_winning_ip_network, update_connection, update_connection_exec, update_process,
+    upsert_domain, upsert_ip_address, upsert_ip_domain, upsert_network, upsert_process,
 };
 
 /// Crate identity used by unit tests and diagnostics.
@@ -458,6 +459,50 @@ mod tests {
         assert_eq!(row.organization.as_deref(), Some("Example Org"));
         assert_eq!(row.asn, Some(64501));
         assert_eq!(row.updated_at, t2);
+    }
+
+    #[tokio::test]
+    async fn upsert_ip_domain_keeps_multiple_domains_per_ip() {
+        let db = Database::open_in_memory().await.expect("open");
+        let seen = Utc.with_ymd_and_hms(2024, 8, 1, 0, 0, 0).unwrap();
+
+        let (ip_id, _) = upsert_ip_domain(
+            db.pool(),
+            &NewIpDomain {
+                ip: "203.0.113.10".into(),
+                domain: "one.example.com".into(),
+                source: "REVERSE_DNS".into(),
+                confidence: Some(0.5),
+                seen_at: seen,
+            },
+        )
+        .await
+        .expect("first domain");
+
+        let (ip_id2, _) = upsert_ip_domain(
+            db.pool(),
+            &NewIpDomain {
+                ip: "203.0.113.10".into(),
+                domain: "two.example.com".into(),
+                source: "REVERSE_DNS".into(),
+                confidence: Some(0.5),
+                seen_at: seen + chrono::Duration::seconds(1),
+            },
+        )
+        .await
+        .expect("second domain");
+        assert_eq!(ip_id, ip_id2);
+
+        let domains = list_domains_for_ip(db.pool(), ip_id)
+            .await
+            .expect("list");
+        let names: Vec<_> = domains.iter().map(|d| d.domain.as_str()).collect();
+        assert_eq!(names, ["one.example.com", "two.example.com"]);
+
+        let links = list_ip_domains(db.pool(), ip_id).await.expect("links");
+        assert_eq!(links.len(), 2);
+        assert!(links.iter().all(|l| l.source == "REVERSE_DNS"));
+        assert!(links.iter().all(|l| (l.confidence.unwrap() - 0.5).abs() < f64::EPSILON));
     }
 
     #[tokio::test]

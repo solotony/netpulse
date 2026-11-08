@@ -115,3 +115,33 @@ pub struct IpAddressRow {
     pub first_seen_at: DateTime<Utc>,
     pub last_seen_at: DateTime<Utc>,
 }
+
+/// Stored domain name row.
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
+pub struct DomainRow {
+    pub id: i64,
+    pub domain: String,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+}
+
+/// Association between an IP address and a domain name.
+#[derive(Debug, Clone, PartialEq, FromRow)]
+pub struct IpDomainRow {
+    pub ip_id: i64,
+    pub domain_id: i64,
+    pub source: String,
+    pub first_seen_at: DateTime<Utc>,
+    pub last_seen_at: DateTime<Utc>,
+    pub confidence: Option<f64>,
+}
+
+/// Input for linking an IP to a domain with discovery metadata.
+#[derive(Debug, Clone)]
+pub struct NewIpDomain {
+    pub ip: String,
+    pub domain: String,
+    pub source: String,
+    pub confidence: Option<f64>,
+    pub seen_at: DateTime<Utc>,
+}

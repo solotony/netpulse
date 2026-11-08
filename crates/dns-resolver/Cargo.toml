@@ -7,3 +7,13 @@ authors.workspace = true
 description = "Domain resolution and reverse DNS for remote IPs"
 
 [dependencies]
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+common = { path = "../common" }
+database = { path = "../database" }
+hickory-resolver = "0.26"
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
+tracing = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time", "test-util"] }
