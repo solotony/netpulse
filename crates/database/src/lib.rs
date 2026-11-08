@@ -14,7 +14,8 @@ pub use models::{
     ConnectionRow, ConnectionUpdate, NewConnection, NewProcess, ProcessRow, ProcessUpdate,
 };
 pub use writes::{
-    insert_connection, insert_connection_for_process, insert_process, update_connection,
+    find_open_connection, insert_connection, insert_connection_event,
+    insert_connection_for_process, insert_process, update_connection, update_connection_exec,
     update_process, upsert_process,
 };
 

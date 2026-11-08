@@ -148,14 +148,15 @@ where
     Ok(id)
 }
 
-/// Applies a partial update to an existing connection row inside a transaction.
-pub async fn update_connection(
-    pool: &SqlitePool,
+/// Applies a partial update to an existing connection row using `executor`.
+pub async fn update_connection_exec<'e, E>(
+    executor: E,
     id: i64,
     update: &ConnectionUpdate,
-) -> Result<(), DatabaseError> {
-    let mut tx = pool.begin().await?;
-
+) -> Result<(), DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
     let set_ended = i64::from(update.ended_at.is_some());
     let ended_value = update.ended_at.flatten();
     let set_sent = i64::from(update.bytes_sent.is_some());
@@ -185,15 +186,99 @@ pub async fn update_connection(
     .bind(recv_value)
     .bind(set_collector)
     .bind(collector_value)
-    .execute(&mut *tx)
+    .execute(executor)
     .await?;
 
     if result.rows_affected() == 0 {
         return Err(DatabaseError::Sqlx(sqlx::Error::RowNotFound));
     }
 
+    Ok(())
+}
+
+/// Applies a partial update to an existing connection row inside a transaction.
+pub async fn update_connection(
+    pool: &SqlitePool,
+    id: i64,
+    update: &ConnectionUpdate,
+) -> Result<(), DatabaseError> {
+    let mut tx = pool.begin().await?;
+    update_connection_exec(&mut *tx, id, update).await?;
     tx.commit().await?;
     Ok(())
+}
+
+/// Finds the open connection matching the connection identity (ended_at IS NULL).
+///
+/// Identity is protocol + local/remote endpoints + process instance. The open
+/// interval is represented by `ended_at IS NULL`.
+pub async fn find_open_connection<'e, E>(
+    executor: E,
+    process_id: i64,
+    protocol: &str,
+    local_ip: &str,
+    local_port: u16,
+    remote_ip: &str,
+    remote_port: u16,
+) -> Result<Option<crate::models::ConnectionRow>, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let row = sqlx::query_as::<_, crate::models::ConnectionRow>(
+        r#"
+        SELECT id, process_id, protocol, direction, local_ip, local_port,
+               remote_ip, remote_port, started_at, ended_at,
+               bytes_sent, bytes_received, collector_id
+        FROM connections
+        WHERE process_id = ?1
+          AND protocol = ?2
+          AND local_ip = ?3
+          AND local_port = ?4
+          AND remote_ip = ?5
+          AND remote_port = ?6
+          AND ended_at IS NULL
+        ORDER BY started_at DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(process_id)
+    .bind(protocol)
+    .bind(local_ip)
+    .bind(i64::from(local_port))
+    .bind(remote_ip)
+    .bind(i64::from(remote_port))
+    .fetch_optional(executor)
+    .await?;
+
+    Ok(row)
+}
+
+/// Inserts a row into `connection_events`. Returns the new primary key.
+pub async fn insert_connection_event<'e, E>(
+    executor: E,
+    connection_id: i64,
+    event_type: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    event_data: Option<&str>,
+) -> Result<i64, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let id = sqlx::query_scalar::<_, i64>(
+        r#"
+        INSERT INTO connection_events (connection_id, event_type, timestamp, event_data)
+        VALUES (?1, ?2, ?3, ?4)
+        RETURNING id
+        "#,
+    )
+    .bind(connection_id)
+    .bind(event_type)
+    .bind(timestamp)
+    .bind(event_data)
+    .fetch_one(executor)
+    .await?;
+
+    Ok(id)
 }
 
 /// Upserts a process and inserts a connection in one transaction.

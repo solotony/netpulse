@@ -160,6 +160,8 @@ dependencies = [
  "chrono",
  "collector-api",
  "common",
+ "database",
+ "sqlx",
  "tokio",
 ]
 
