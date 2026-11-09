@@ -1,3 +1,6 @@
+import type { DateTimeFormatPreference } from "./monitoring";
+import { formatDateTime } from "../utils/format";
+
 /** Backend connection row returned by `query_connection_history`. */
 export interface ConnectionRow {
   id: number;
@@ -136,6 +139,7 @@ function display(value: string | null | undefined): string {
 export function mapConnectionRow(
   row: ConnectionRow,
   nowMs = Date.now(),
+  dateTimeFormat: DateTimeFormatPreference = "iso",
 ): ConnectionTableRow {
   const process = display(row.processName);
   const localAddress = formatEndpoint(row.localIp, row.localPort);
@@ -145,11 +149,12 @@ export function mapConnectionRow(
   const organization = display(row.organization);
   const duration = formatDuration(row.startedAt, row.endedAt, nowMs);
   const protocol = row.protocol.toUpperCase();
+  const time = formatDateTime(row.startedAt, dateTimeFormat);
 
   return {
     id: row.id,
     processId: row.processId,
-    time: row.startedAt,
+    time,
     process,
     pid: row.pid,
     protocol,
@@ -162,7 +167,7 @@ export function mapConnectionRow(
     duration,
     status: row.status,
     cells: {
-      time: row.startedAt,
+      time,
       process: row.processName?.trim() || "",
       pid: String(row.pid),
       protocol,

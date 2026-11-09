@@ -16,7 +16,7 @@ use mock_connections::{
     seed_mock_and_list_connections, ConnectionsPage, DEFAULT_PAGE_SIZE,
 };
 use monitoring::{CollectorBackend, MonitoringSession, MonitoringStatusDto};
-use settings::AppSettings;
+use settings::{AppSettings, DatabaseInfoDto};
 use stats::query_statistics;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -129,6 +129,88 @@ async fn set_background_mode(app: tauri::AppHandle, enabled: bool) -> Result<App
     settings::set_background_mode(session.database(), enabled).await
 }
 
+#[tauri::command]
+async fn set_dns_resolution(app: tauri::AppHandle, enabled: bool) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_dns_resolution(session.database(), enabled).await
+}
+
+#[tauri::command]
+async fn set_reverse_dns(app: tauri::AppHandle, enabled: bool) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_reverse_dns(session.database(), enabled).await
+}
+
+#[tauri::command]
+async fn set_ip_enrichment(app: tauri::AppHandle, enabled: bool) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_ip_enrichment(session.database(), enabled).await
+}
+
+#[tauri::command]
+async fn set_asn_info(app: tauri::AppHandle, enabled: bool) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_asn_info(session.database(), enabled).await
+}
+
+#[tauri::command]
+async fn set_country_info(app: tauri::AppHandle, enabled: bool) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_country_info(session.database(), enabled).await
+}
+
+#[tauri::command]
+async fn set_cache_ttl_seconds(
+    app: tauri::AppHandle,
+    seconds: i64,
+) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_cache_ttl_seconds(session.database(), seconds).await
+}
+
+#[tauri::command]
+async fn set_history_retention(
+    app: tauri::AppHandle,
+    enabled: bool,
+    days: i64,
+) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_history_retention(session.database(), enabled, days).await
+}
+
+#[tauri::command]
+async fn set_language(app: tauri::AppHandle, language: String) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_language(session.database(), language).await
+}
+
+#[tauri::command]
+async fn set_theme(app: tauri::AppHandle, theme: String) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_theme(session.database(), theme).await
+}
+
+#[tauri::command]
+async fn set_date_time_format(
+    app: tauri::AppHandle,
+    format: String,
+) -> Result<AppSettings, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::set_date_time_format(session.database(), format).await
+}
+
+#[tauri::command]
+async fn get_database_info(app: tauri::AppHandle) -> Result<DatabaseInfoDto, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    DatabaseInfoDto::load(session.database()).await
+}
+
+#[tauri::command]
+async fn clear_history(app: tauri::AppHandle) -> Result<DatabaseInfoDto, String> {
+    let session = app.state::<Arc<MonitoringSession>>();
+    settings::clear_history(session.database()).await
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -151,6 +233,9 @@ pub fn run() {
                 .map_err(|err| std::io::Error::other(err))?;
             let app_settings = tauri::async_runtime::block_on(AppSettings::load(&db))
                 .map_err(|err| std::io::Error::other(err))?;
+            if let Err(err) = tauri::async_runtime::block_on(db.apply_history_retention()) {
+                tracing::warn!(error = %err, "history retention on startup failed");
+            }
             let session = Arc::new(MonitoringSession::new(db));
 
             // Sync OS autostart with the persisted setting.
@@ -238,6 +323,18 @@ pub fn run() {
             set_autostart,
             set_start_monitoring_automatically,
             set_background_mode,
+            set_dns_resolution,
+            set_reverse_dns,
+            set_ip_enrichment,
+            set_asn_info,
+            set_country_info,
+            set_cache_ttl_seconds,
+            set_history_retention,
+            set_language,
+            set_theme,
+            set_date_time_format,
+            get_database_info,
+            clear_history,
         ]);
 
     builder

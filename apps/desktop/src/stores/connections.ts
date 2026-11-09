@@ -9,8 +9,10 @@ import {
   type ConnectionsPage,
   type SortDir,
 } from "../types/connections";
+import { useMonitoringStore } from "./monitoring";
 
 export const useConnectionsStore = defineStore("connections", () => {
+  const monitoring = useMonitoringStore();
   const page = ref<ConnectionsPage | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
@@ -35,7 +37,8 @@ export const useConnectionsStore = defineStore("connections", () => {
     if (!page.value) {
       return [];
     }
-    return page.value.rows.map((row) => mapConnectionRow(row));
+    const format = monitoring.settings?.dateTimeFormat ?? "iso";
+    return page.value.rows.map((row) => mapConnectionRow(row, Date.now(), format));
   });
 
   const totalPages = computed(() => {

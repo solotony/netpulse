@@ -2,17 +2,22 @@
 
 mod entities;
 mod error;
+mod maintenance;
 mod models;
 mod queries;
 mod settings;
 mod writes;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 use sqlx::{ConnectOptions, SqlitePool};
 
 pub use error::DatabaseError;
+pub use maintenance::{
+    apply_history_retention, clear_connection_history, connection_history_bounds, database_info,
+    delete_connections_older_than, DatabaseInfo,
+};
 pub use models::{
     ConnectionRow, ConnectionUpdate, DomainRow, IpAddressRow, IpDomainRow, NetworkRow,
     NewConnection, NewIpDomain, NewNetwork, NewProcess, ProcessRow, ProcessUpdate,
@@ -28,9 +33,12 @@ pub use queries::{
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
 };
 pub use settings::{
-    ensure_default_settings, get_bool_setting, get_setting, set_bool_setting, set_setting,
-    SETTING_AUTOSTART, SETTING_BACKGROUND_MODE, SETTING_IP_ENRICHMENT,
-    SETTING_START_MONITORING_AUTOMATICALLY,
+    ensure_default_settings, get_bool_setting, get_i64_setting, get_setting, set_bool_setting,
+    set_i64_setting, set_setting, SETTING_ASN_INFO, SETTING_AUTOSTART, SETTING_BACKGROUND_MODE,
+    SETTING_CACHE_TTL_SECONDS, SETTING_COUNTRY_INFO, SETTING_DATE_TIME_FORMAT,
+    SETTING_DNS_RESOLUTION, SETTING_HISTORY_RETENTION_DAYS, SETTING_HISTORY_RETENTION_ENABLED,
+    SETTING_IP_ENRICHMENT, SETTING_LANGUAGE, SETTING_REVERSE_DNS,
+    SETTING_START_MONITORING_AUTOMATICALLY, SETTING_THEME,
 };
 pub use writes::{
     find_open_connection, get_domain, get_ip_address, get_ip_winning_network, get_network,
@@ -50,13 +58,15 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../resources/m
 #[derive(Clone, Debug)]
 pub struct Database {
     pool: SqlitePool,
+    path: Option<PathBuf>,
 }
 
 impl Database {
     /// Opens (or creates) a SQLite database at `path`, enables WAL + foreign keys, and migrates.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, DatabaseError> {
+        let path_buf = path.as_ref().to_path_buf();
         let options = SqliteConnectOptions::new()
-            .filename(path.as_ref())
+            .filename(&path_buf)
             .create_if_missing(true)
             .foreign_keys(true)
             .journal_mode(SqliteJournalMode::Wal)
@@ -68,7 +78,10 @@ impl Database {
             .connect_with(options)
             .await?;
 
-        let db = Self { pool };
+        let db = Self {
+            pool,
+            path: Some(path_buf),
+        };
         db.migrate().await?;
         ensure_default_settings(db.pool()).await?;
         Ok(db)
@@ -89,7 +102,10 @@ impl Database {
             .connect_with(options)
             .await?;
 
-        let db = Self { pool };
+        let db = Self {
+            pool,
+            path: None,
+        };
         db.migrate().await?;
         ensure_default_settings(db.pool()).await?;
         Ok(db)
@@ -104,6 +120,26 @@ impl Database {
     /// Shared connection pool.
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+
+    /// On-disk path when opened via [`Database::open`]; `None` for in-memory databases.
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+
+    /// Snapshot for Settings → Data (path, size, first/last event).
+    pub async fn database_info(&self) -> Result<DatabaseInfo, DatabaseError> {
+        database_info(self.pool(), self.path()).await
+    }
+
+    /// Deletes all connection history (events cascade).
+    pub async fn clear_connection_history(&self) -> Result<u64, DatabaseError> {
+        clear_connection_history(self.pool()).await
+    }
+
+    /// Applies optional automatic history retention from settings.
+    pub async fn apply_history_retention(&self) -> Result<u64, DatabaseError> {
+        apply_history_retention(self.pool()).await
     }
 
     /// Reports whether foreign keys are enabled on a pooled connection.

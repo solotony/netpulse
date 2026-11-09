@@ -1,13 +1,16 @@
 //! Asynchronous reverse-DNS worker: queues PTR lookups off the collector path.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use common::normalize_domain;
-use database::{upsert_ip_domain, Database, NewIpDomain};
+use database::{
+    get_bool_setting, get_i64_setting, upsert_ip_domain, Database, NewIpDomain,
+    SETTING_CACHE_TTL_SECONDS, SETTING_DNS_RESOLUTION, SETTING_REVERSE_DNS,
+};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
@@ -131,8 +134,8 @@ async fn worker_loop<R>(
 ) where
     R: PtrResolver + 'static,
 {
-    // IPs already looked up (success or failure). Cache hits skip the resolver.
-    let mut cache: HashSet<IpAddr> = HashSet::new();
+    // IPs already looked up (success or failure). Cache hits skip the resolver until TTL.
+    let mut cache: HashMap<IpAddr, Instant> = HashMap::new();
     let mut in_flight: HashSet<IpAddr> = HashSet::new();
 
     while let Some(request) = rx.recv().await {
@@ -143,21 +146,58 @@ async fn worker_loop<R>(
             continue;
         }
 
-        if cache.contains(&ip) || in_flight.contains(&ip) {
+        let dns_enabled = match get_bool_setting(db.pool(), SETTING_DNS_RESOLUTION, true).await {
+            Ok(v) => v,
+            Err(err) => {
+                warn!(error = %err, "failed to read dns_resolution setting");
+                signal_done(done);
+                continue;
+            }
+        };
+        let reverse_enabled = match get_bool_setting(db.pool(), SETTING_REVERSE_DNS, true).await {
+            Ok(v) => v,
+            Err(err) => {
+                warn!(error = %err, "failed to read reverse_dns setting");
+                signal_done(done);
+                continue;
+            }
+        };
+        if !dns_enabled || !reverse_enabled {
             signal_done(done);
             continue;
+        }
+
+        let ttl_secs = match get_i64_setting(db.pool(), SETTING_CACHE_TTL_SECONDS, 86400).await {
+            Ok(v) => v.max(0),
+            Err(err) => {
+                warn!(error = %err, "failed to read cache_ttl_seconds setting");
+                86400
+            }
+        };
+        if in_flight.contains(&ip) {
+            signal_done(done);
+            continue;
+        }
+        if let Some(cached_at) = cache.get(&ip).copied() {
+            let expired =
+                ttl_secs > 0 && cached_at.elapsed() >= Duration::from_secs(ttl_secs as u64);
+            if !expired {
+                signal_done(done);
+                continue;
+            }
+            cache.remove(&ip);
         }
 
         in_flight.insert(ip);
         match resolve_and_persist(&db, resolver.as_ref(), ip).await {
             Ok(_) => {
-                cache.insert(ip);
+                cache.insert(ip, Instant::now());
             }
             Err(err) => {
                 warn!(error = %err, %ip, "reverse DNS lookup failed");
                 // Cache the negative outcome so a second sighting does not re-hit the resolver.
                 // No fake domain is written to the database.
-                cache.insert(ip);
+                cache.insert(ip, Instant::now());
             }
         }
         in_flight.remove(&ip);
@@ -272,7 +312,10 @@ impl PtrResolver for MockPtrResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use database::{list_domains_for_ip, list_ip_domains, upsert_ip_address, Database};
+    use database::{
+        list_domains_for_ip, list_ip_domains, set_bool_setting, upsert_ip_address, Database,
+        SETTING_DNS_RESOLUTION, SETTING_REVERSE_DNS,
+    };
     use std::str::FromStr;
     use std::time::Duration;
     use tokio::sync::Notify;
@@ -324,6 +367,39 @@ mod tests {
             .all(|l| (l.confidence.unwrap() - REVERSE_DNS_CONFIDENCE).abs() < f64::EPSILON));
 
         worker.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn disabled_reverse_dns_setting_performs_no_lookup() {
+        let db = Database::open_in_memory().await.expect("db");
+        set_bool_setting(db.pool(), SETTING_REVERSE_DNS, false)
+            .await
+            .expect("disable reverse dns");
+
+        let resolver = Arc::new(MockPtrResolver::with_names(vec!["cdn.example.net.".into()]));
+        // Construction enabled so requests reach the worker, which re-checks the DB setting.
+        let worker = DnsWorker::spawn(db.clone(), resolver.clone(), fast_config(true));
+        let ip = IpAddr::from_str("203.0.113.10").unwrap();
+        assert!(worker.handle().enqueue_and_wait(ip).await);
+        assert_eq!(resolver.call_count(), 0);
+        assert!(domains_for(&db, "203.0.113.10").await.is_empty());
+
+        set_bool_setting(db.pool(), SETTING_REVERSE_DNS, true)
+            .await
+            .expect("re-enable");
+        set_bool_setting(db.pool(), SETTING_DNS_RESOLUTION, false)
+            .await
+            .expect("disable dns resolution");
+        assert!(worker.handle().enqueue_and_wait(ip).await);
+        assert_eq!(resolver.call_count(), 0);
+
+        // Construction-time disable also skips without enqueueing.
+        let worker2 = DnsWorker::spawn(db.clone(), resolver.clone(), fast_config(false));
+        assert!(!worker2.handle().enqueue(ip));
+        assert_eq!(resolver.call_count(), 0);
+
+        worker.shutdown().await;
+        worker2.shutdown().await;
     }
 
     #[tokio::test]

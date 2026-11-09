@@ -1,13 +1,15 @@
 //! Asynchronous enrichment worker: queues lookups off the collector path.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use database::{
-    get_bool_setting, get_ip_winning_network, list_networks, store_winning_ip_network,
-    upsert_ip_address, Database, SETTING_IP_ENRICHMENT,
+    get_bool_setting, get_i64_setting, get_ip_winning_network, list_networks,
+    store_winning_ip_network, upsert_ip_address, Database, SETTING_ASN_INFO,
+    SETTING_CACHE_TTL_SECONDS, SETTING_COUNTRY_INFO, SETTING_IP_ENRICHMENT,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
@@ -144,7 +146,7 @@ async fn worker_loop<C>(
     C: HttpClient + 'static,
 {
     let rdap = RdapClient::new(http, config.rdap.clone());
-    let mut in_memory_done: HashSet<IpAddr> = HashSet::new();
+    let mut in_memory_done: HashMap<IpAddr, Instant> = HashMap::new();
     let mut in_flight: HashSet<IpAddr> = HashSet::new();
 
     while let Some(request) = rx.recv().await {
@@ -155,7 +157,7 @@ async fn worker_loop<C>(
             continue;
         }
 
-        if in_memory_done.contains(&ip) || in_flight.contains(&ip) {
+        if in_flight.contains(&ip) {
             signal_done(done);
             continue;
         }
@@ -178,9 +180,26 @@ async fn worker_loop<C>(
             continue;
         }
 
+        let ttl_secs = match get_i64_setting(db.pool(), SETTING_CACHE_TTL_SECONDS, 86400).await {
+            Ok(v) => v.max(0),
+            Err(err) => {
+                warn!(error = %err, "failed to read cache_ttl_seconds setting");
+                86400
+            }
+        };
+        if let Some(cached_at) = in_memory_done.get(&ip).copied() {
+            let expired =
+                ttl_secs > 0 && cached_at.elapsed() >= Duration::from_secs(ttl_secs as u64);
+            if !expired {
+                signal_done(done);
+                continue;
+            }
+            in_memory_done.remove(&ip);
+        }
+
         // Cache hit: IP already associated with a stored network — no HTTP.
-        if let Ok(Some(_)) = cached_network_for_ip(&db, ip).await {
-            in_memory_done.insert(ip);
+        if let Ok(Some(_)) = cached_network_for_ip(&db, ip, ttl_secs).await {
+            in_memory_done.insert(ip, Instant::now());
             signal_done(done);
             continue;
         }
@@ -190,7 +209,7 @@ async fn worker_loop<C>(
             if let Err(err) = associate_existing_prefix(&db, ip, &prefix_cidr).await {
                 warn!(error = %err, %ip, "failed to associate existing network prefix");
             } else {
-                in_memory_done.insert(ip);
+                in_memory_done.insert(ip, Instant::now());
             }
             signal_done(done);
             continue;
@@ -199,20 +218,21 @@ async fn worker_loop<C>(
         in_flight.insert(ip);
         match rdap.lookup_ip(ip).await {
             Ok(info) => {
-                let network = info.into_new_network(Utc::now());
+                let mut network = info.into_new_network(Utc::now());
+                apply_enrichment_field_gates(&db, &mut network).await;
                 if let Err(err) =
                     store_winning_ip_network(db.pool(), &ip.to_string(), &network, Utc::now())
                         .await
                 {
                     warn!(error = %err, %ip, "failed to persist RDAP network");
                 } else {
-                    in_memory_done.insert(ip);
+                    in_memory_done.insert(ip, Instant::now());
                 }
             }
             Err(err) => {
                 warn!(error = %err, %ip, "RDAP lookup failed");
                 // Remember the attempt so a second sighting does not hammer HTTP.
-                in_memory_done.insert(ip);
+                in_memory_done.insert(ip, Instant::now());
             }
         }
         in_flight.remove(&ip);
@@ -229,12 +249,37 @@ fn signal_done(done: Option<oneshot::Sender<()>>) {
 async fn cached_network_for_ip(
     db: &Database,
     ip: IpAddr,
+    ttl_secs: i64,
 ) -> Result<Option<()>, EnrichmentError> {
     let ip_str = ip.to_string();
     // Ensure the IP row exists for association lookups; cheap upsert of last_seen.
     let ip_id = upsert_ip_address(db.pool(), &ip_str, Utc::now()).await?;
-    let winning = get_ip_winning_network(db.pool(), ip_id).await?;
-    Ok(winning.map(|_| ()))
+    let Some(winning) = get_ip_winning_network(db.pool(), ip_id).await? else {
+        return Ok(None);
+    };
+    if ttl_secs > 0 {
+        let age = Utc::now().signed_duration_since(winning.updated_at);
+        if age.num_seconds() >= ttl_secs {
+            return Ok(None);
+        }
+    }
+    Ok(Some(()))
+}
+
+/// Clears ASN / country on the network row when those settings are disabled.
+async fn apply_enrichment_field_gates(db: &Database, network: &mut database::NewNetwork) {
+    let store_asn = get_bool_setting(db.pool(), SETTING_ASN_INFO, true)
+        .await
+        .unwrap_or(true);
+    let store_country = get_bool_setting(db.pool(), SETTING_COUNTRY_INFO, true)
+        .await
+        .unwrap_or(true);
+    if !store_asn {
+        network.asn = None;
+    }
+    if !store_country {
+        network.country = None;
+    }
 }
 
 async fn match_existing_prefix(db: &Database, ip: IpAddr) -> Result<Option<String>, EnrichmentError> {
@@ -332,7 +377,8 @@ mod tests {
     use super::*;
     use crate::rdap::cloudflare_rdap_fixture;
     use database::{
-        get_ip_winning_network, set_bool_setting, upsert_ip_address, Database, SETTING_IP_ENRICHMENT,
+        get_ip_winning_network, set_bool_setting, upsert_ip_address, Database, SETTING_ASN_INFO,
+        SETTING_COUNTRY_INFO, SETTING_IP_ENRICHMENT,
     };
     use std::str::FromStr;
     use std::time::Duration;
@@ -455,6 +501,34 @@ mod tests {
 
         worker.shutdown().await;
         worker2.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn disabled_asn_and_country_are_not_stored() {
+        let db = Database::open_in_memory().await.expect("db");
+        set_bool_setting(db.pool(), SETTING_ASN_INFO, false)
+            .await
+            .expect("disable asn");
+        set_bool_setting(db.pool(), SETTING_COUNTRY_INFO, false)
+            .await
+            .expect("disable country");
+
+        let http = Arc::new(MockHttpClient::with_body(cloudflare_rdap_fixture()));
+        let worker = EnrichmentWorker::spawn(db.clone(), http.clone(), fast_config(true));
+        let ip = IpAddr::from_str("172.67.10.20").unwrap();
+        assert!(worker.handle().enqueue_and_wait(ip).await);
+        assert_eq!(http.call_count(), 1);
+
+        let network = winning_for(&db, "172.67.10.20").await;
+        assert_eq!(network.cidr, "172.64.0.0/13");
+        assert!(network.asn.is_none(), "ASN must not be stored when disabled");
+        assert!(
+            network.country.is_none(),
+            "country must not be stored when disabled"
+        );
+        assert_eq!(network.organization.as_deref(), Some("Cloudflare, Inc."));
+
+        worker.shutdown().await;
     }
 
     #[tokio::test]

@@ -17,7 +17,19 @@ describe("monitoring types", () => {
       autostart: false,
       startMonitoringAutomatically: true,
       backgroundMode: true,
+      dnsResolution: true,
+      reverseDns: true,
+      ipEnrichment: true,
+      asnInfo: true,
+      countryInfo: false,
+      cacheTtlSeconds: 86400,
+      historyRetentionEnabled: false,
+      historyRetentionDays: 30,
+      language: "en",
+      theme: "system",
+      dateTimeFormat: "iso",
     };
     expect(settings.backgroundMode).toBe(true);
+    expect(settings.theme).toBe("system");
   });
 });

@@ -2,14 +2,24 @@
 
 use chrono::{DateTime, Utc};
 use database::{
-    ConnectionHistoryFilter, ConnectionHistoryQuery, ConnectionHistoryRow, ConnectionSortColumn,
-    DomainListRow, EntityListQuery, IpListRow, NetworkListRow, ProcessListRow, SortDirection,
-    DEFAULT_PAGE_SIZE,
+    get_bool_setting, ConnectionHistoryFilter, ConnectionHistoryQuery, ConnectionHistoryRow,
+    ConnectionSortColumn, DomainListRow, EntityListQuery, IpListRow, NetworkListRow, ProcessListRow,
+    SortDirection, DEFAULT_PAGE_SIZE, SETTING_ASN_INFO, SETTING_COUNTRY_INFO,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::monitoring::MonitoringSession;
 use std::sync::Arc;
+
+async fn enrichment_display_flags(db: &database::Database) -> (bool, bool) {
+    let asn = get_bool_setting(db.pool(), SETTING_ASN_INFO, true)
+        .await
+        .unwrap_or(true);
+    let country = get_bool_setting(db.pool(), SETTING_COUNTRY_INFO, true)
+        .await
+        .unwrap_or(true);
+    (asn, country)
+}
 
 /// Frontend-facing connection history row (camelCase).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -355,6 +365,7 @@ pub async fn list_ip_addresses(
 
     let (entity_query, page, page_size) = to_entity_query(query.unwrap_or_default());
     let session = app.state::<Arc<MonitoringSession>>();
+    let (show_asn, show_country) = enrichment_display_flags(session.database()).await;
     let result = session
         .database()
         .list_ip_addresses(&entity_query)
@@ -362,7 +373,20 @@ pub async fn list_ip_addresses(
         .map_err(|err| format!("list ip addresses: {err}"))?;
 
     Ok(IpPageDto {
-        rows: result.rows.into_iter().map(IpRowDto::from).collect(),
+        rows: result
+            .rows
+            .into_iter()
+            .map(|row| {
+                let mut dto = IpRowDto::from(row);
+                if !show_asn {
+                    dto.asn = None;
+                }
+                if !show_country {
+                    dto.country = None;
+                }
+                dto
+            })
+            .collect(),
         page,
         page_size,
         total: result.total,
@@ -481,6 +505,7 @@ pub async fn list_networks(
 
     let (entity_query, page, page_size) = to_entity_query(query.unwrap_or_default());
     let session = app.state::<Arc<MonitoringSession>>();
+    let (show_asn, show_country) = enrichment_display_flags(session.database()).await;
     let result = session
         .database()
         .list_networks_page(&entity_query)
@@ -488,7 +513,20 @@ pub async fn list_networks(
         .map_err(|err| format!("list networks: {err}"))?;
 
     Ok(NetworkPageDto {
-        rows: result.rows.into_iter().map(NetworkRowDto::from).collect(),
+        rows: result
+            .rows
+            .into_iter()
+            .map(|row| {
+                let mut dto = NetworkRowDto::from(row);
+                if !show_asn {
+                    dto.asn = None;
+                }
+                if !show_country {
+                    dto.country = None;
+                }
+                dto
+            })
+            .collect(),
         page,
         page_size,
         total: result.total,

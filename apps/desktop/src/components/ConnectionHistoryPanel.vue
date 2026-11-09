@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { fetchConnections } from "../services/connections";
+import { useMonitoringStore } from "../stores/monitoring";
 import {
   mapConnectionRow,
   type ConnectionTableRow,
@@ -16,6 +17,7 @@ const emit = defineEmits<{
   close: [];
 }>();
 
+const monitoring = useMonitoringStore();
 const loading = ref(false);
 const error = ref<string | null>(null);
 const rows = ref<ConnectionTableRow[]>([]);
@@ -34,7 +36,8 @@ async function load() {
       sortDir: "desc",
       filter: props.filter,
     });
-    rows.value = page.rows.map((row) => mapConnectionRow(row));
+    const format = monitoring.settings?.dateTimeFormat ?? "iso";
+    rows.value = page.rows.map((row) => mapConnectionRow(row, Date.now(), format));
     total.value = page.total;
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
