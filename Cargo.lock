@@ -583,6 +583,8 @@ name = "collector-linux"
 version = "0.1.0"
 dependencies = [
  "collector-api",
+ "common",
+ "tokio",
 ]
 
 [[package]]
@@ -602,6 +604,8 @@ name = "collector-windows"
 version = "0.1.0"
 dependencies = [
  "collector-api",
+ "common",
+ "tokio",
 ]
 
 [[package]]
@@ -651,12 +655,16 @@ dependencies = [
 name = "core"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "collector-api",
  "common",
  "database",
+ "dns-resolver",
+ "ip-enrichment",
  "serde",
  "sqlx",
+ "statistics",
  "tokio",
  "tracing",
 ]

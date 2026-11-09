@@ -1,49 +1,49 @@
 //! Windows network connection collector (not yet implemented).
 
-use collector_api::{CollectorCapabilities, Platform};
+use collector_api::{
+    CollectorCapabilities, CollectorError, NetworkCollector, Platform,
+};
+use common::ConnectionEvent;
+use tokio::sync::mpsc;
 
 /// Crate identity used by unit tests and diagnostics.
 pub const CRATE_NAME: &str = "collector-windows";
 
-/// Error returned by unimplemented collector operations.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CollectorError {
-    message: &'static str,
-}
-
-impl CollectorError {
-    pub fn not_implemented() -> Self {
-        Self {
-            message: "Windows collector is not implemented",
-        }
-    }
-
-    pub fn message(&self) -> &'static str {
-        self.message
-    }
-}
-
-/// Windows collector stub — start returns not-implemented; capabilities are all false.
+/// Windows collector stub — capabilities are all false; `start` is unsupported.
 #[derive(Debug, Default)]
 pub struct WindowsCollector;
 
 impl WindowsCollector {
-    pub fn platform(&self) -> Platform {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl NetworkCollector for WindowsCollector {
+    fn platform(&self) -> Platform {
         Platform::Windows
     }
 
-    pub fn capabilities(&self) -> CollectorCapabilities {
+    fn capabilities(&self) -> CollectorCapabilities {
         CollectorCapabilities::none()
     }
 
-    pub fn start(&mut self) -> Result<(), CollectorError> {
-        Err(CollectorError::not_implemented())
+    async fn start(
+        &mut self,
+        _event_tx: mpsc::Sender<ConnectionEvent>,
+    ) -> Result<(), CollectorError> {
+        Err(CollectorError::NotImplemented)
+    }
+
+    async fn stop(&mut self) -> Result<(), CollectorError> {
+        Err(CollectorError::NotStarted)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use collector_api::NetworkCollector;
 
     #[test]
     fn crate_name_is_collector_windows() {
@@ -51,13 +51,27 @@ mod tests {
     }
 
     #[test]
-    fn platform_stub_identity() {
-        let mut collector = WindowsCollector;
+    fn capabilities_are_all_false() {
+        let collector = WindowsCollector::new();
+        let caps = collector.capabilities();
+        assert_eq!(caps, CollectorCapabilities::none());
+        assert!(!caps.new_connection_detection);
+        assert!(!caps.existing_connection_enumeration);
+        assert!(!caps.connection_termination_detection);
+        assert!(!caps.tcp);
+        assert!(!caps.udp);
+        assert!(!caps.traffic_byte_counters);
+        assert!(!caps.process_identification);
+        assert!(!caps.incoming_connection_detection);
+    }
+
+    #[tokio::test]
+    async fn start_returns_not_implemented() {
+        let mut collector = WindowsCollector::new();
         assert_eq!(collector.platform(), Platform::Windows);
-        assert_eq!(collector.capabilities(), CollectorCapabilities::none());
-        assert_eq!(
-            collector.start().unwrap_err().message(),
-            "Windows collector is not implemented"
-        );
+
+        let (tx, _rx) = mpsc::channel(1);
+        let err = collector.start(tx).await.expect_err("start must fail");
+        assert_eq!(err, CollectorError::NotImplemented);
     }
 }

@@ -8,3 +8,8 @@ description = "Windows network connection collector (stub)"
 
 [dependencies]
 collector-api = { path = "../collector-api" }
+common = { path = "../common" }
+tokio = { version = "1", features = ["macros", "rt", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync"] }

@@ -19,3 +19,9 @@ sqlx = { version = "0.8", default-features = false, features = [
 ] }
 tokio = { version = "1", features = ["macros", "rt", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
+
+[dev-dependencies]
+async-trait = "0.1"
+dns-resolver = { path = "../dns-resolver" }
+ip-enrichment = { path = "../ip-enrichment" }
+statistics = { path = "../statistics" }

@@ -14,6 +14,9 @@ pub use pipeline::{EventPipeline, PipelineError, ProcessOutcome};
 pub const CRATE_NAME: &str = "core";
 
 #[cfg(test)]
+mod pipeline_integration;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
