@@ -1,5 +1,6 @@
 //! SQLite persistence, migrations, and historical queries.
 
+mod entities;
 mod error;
 mod models;
 mod queries;
@@ -15,6 +16,11 @@ pub use error::DatabaseError;
 pub use models::{
     ConnectionRow, ConnectionUpdate, DomainRow, IpAddressRow, IpDomainRow, NetworkRow,
     NewConnection, NewIpDomain, NewNetwork, NewProcess, ProcessRow, ProcessUpdate,
+};
+pub use entities::{
+    list_domains, list_ip_addresses, list_networks_page, list_processes, DomainListPage,
+    DomainListRow, EntityListQuery, IpListPage, IpListRow, NetworkListPage, NetworkListRow,
+    ProcessListPage, ProcessListRow,
 };
 pub use queries::{
     query_connection_history, ConnectionHistoryFilter, ConnectionHistoryPage,
@@ -155,6 +161,38 @@ impl Database {
         query: &ConnectionHistoryQuery,
     ) -> Result<ConnectionHistoryPage, DatabaseError> {
         queries::query_connection_history(&self.pool, query).await
+    }
+
+    /// Paginated process list with connection aggregations.
+    pub async fn list_processes(
+        &self,
+        query: &EntityListQuery,
+    ) -> Result<ProcessListPage, DatabaseError> {
+        entities::list_processes(&self.pool, query).await
+    }
+
+    /// Paginated remote-IP list with enrichment joins.
+    pub async fn list_ip_addresses(
+        &self,
+        query: &EntityListQuery,
+    ) -> Result<IpListPage, DatabaseError> {
+        entities::list_ip_addresses(&self.pool, query).await
+    }
+
+    /// Paginated domain list with association aggregations.
+    pub async fn list_domains(
+        &self,
+        query: &EntityListQuery,
+    ) -> Result<DomainListPage, DatabaseError> {
+        entities::list_domains(&self.pool, query).await
+    }
+
+    /// Paginated network list with IP/connection aggregations.
+    pub async fn list_networks_page(
+        &self,
+        query: &EntityListQuery,
+    ) -> Result<NetworkListPage, DatabaseError> {
+        entities::list_networks_page(&self.pool, query).await
     }
 }
 

@@ -1,17 +1,23 @@
 //! Network Monitor Tauri backend.
 
+mod history;
 mod mock_connections;
 mod monitoring;
 mod settings;
+mod stats;
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use history::{
+    list_domains, list_ip_addresses, list_networks, list_processes, query_connection_history,
+};
 use mock_connections::{
     seed_mock_and_list_connections, ConnectionsPage, DEFAULT_PAGE_SIZE,
 };
 use monitoring::{CollectorBackend, MonitoringSession, MonitoringStatusDto};
 use settings::AppSettings;
+use stats::query_statistics;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, RunEvent, WindowEvent};
@@ -217,6 +223,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             list_mock_connections,
+            query_connection_history,
+            list_processes,
+            list_ip_addresses,
+            list_domains,
+            list_networks,
+            query_statistics,
             start_monitoring,
             stop_monitoring,
             pause_monitoring,

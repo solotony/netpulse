@@ -22,6 +22,7 @@ common = { path = "../../../crates/common" }
 monitor-core = { package = "core", path = "../../../crates/core" }
 database = { path = "../../../crates/database" }
 process-info = { path = "../../../crates/process-info" }
+statistics = { path = "../../../crates/statistics" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = [

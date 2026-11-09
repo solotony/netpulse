@@ -1,7 +1,11 @@
 import { createRouter, createWebHistory } from "vue-router";
 import ConnectionsPage from "../pages/ConnectionsPage.vue";
-import PlaceholderPage from "../pages/PlaceholderPage.vue";
+import DomainsPage from "../pages/DomainsPage.vue";
+import IpAddressesPage from "../pages/IpAddressesPage.vue";
+import NetworksPage from "../pages/NetworksPage.vue";
+import ProcessesPage from "../pages/ProcessesPage.vue";
 import SettingsPage from "../pages/SettingsPage.vue";
+import StatisticsPage from "../pages/StatisticsPage.vue";
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -16,31 +20,31 @@ export const router = createRouter({
     {
       path: "/processes",
       name: "processes",
-      component: PlaceholderPage,
+      component: ProcessesPage,
       meta: { title: "Processes" },
     },
     {
       path: "/ip-addresses",
       name: "ip-addresses",
-      component: PlaceholderPage,
+      component: IpAddressesPage,
       meta: { title: "IP Addresses" },
     },
     {
       path: "/domains",
       name: "domains",
-      component: PlaceholderPage,
+      component: DomainsPage,
       meta: { title: "Domains" },
     },
     {
       path: "/networks",
       name: "networks",
-      component: PlaceholderPage,
+      component: NetworksPage,
       meta: { title: "Networks" },
     },
     {
       path: "/statistics",
       name: "statistics",
-      component: PlaceholderPage,
+      component: StatisticsPage,
       meta: { title: "Statistics" },
     },
     {
