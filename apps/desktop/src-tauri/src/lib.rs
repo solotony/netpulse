@@ -238,7 +238,10 @@ pub fn run() {
             if let Err(err) = tauri::async_runtime::block_on(db.apply_history_retention()) {
                 tracing::warn!(error = %err, "history retention on startup failed");
             }
-            let session = Arc::new(MonitoringSession::new(db));
+            // Enrichment workers call tokio::spawn; must construct inside the runtime.
+            let session = tauri::async_runtime::block_on(async {
+                Arc::new(MonitoringSession::new(db))
+            });
 
             // Sync OS autostart with the persisted setting.
             let autolaunch = handle.autolaunch();

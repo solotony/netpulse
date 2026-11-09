@@ -151,6 +151,9 @@ pub struct MonitoringSession {
 }
 
 impl MonitoringSession {
+    /// Builds the session and starts enrichment workers.
+    ///
+    /// Must be called from a Tokio runtime (workers use `tokio::spawn`).
     pub fn new(db: Database) -> Self {
         let enrichment_worker = EnrichmentWorker::spawn(
             db.clone(),
