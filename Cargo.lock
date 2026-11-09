@@ -2682,12 +2682,15 @@ dependencies = [
 name = "network-monitor"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "collector-api",
  "collector-macos",
  "common",
  "core",
  "database",
+ "dns-resolver",
+ "ip-enrichment",
  "process-info",
  "rfd",
  "serde",

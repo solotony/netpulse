@@ -5,6 +5,8 @@
 //! `connection_events`, and closes sessions on [`ConnectionEventType::ConnectionClosed`].
 
 use std::fmt;
+use std::net::IpAddr;
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use common::{ConnectionEvent, ConnectionEventType, Direction, Protocol};
@@ -13,6 +15,11 @@ use database::{
     upsert_process, ConnectionUpdate, Database, DatabaseError, NewConnection, NewProcess,
 };
 use tokio::sync::mpsc;
+
+/// Non-blocking observer invoked with each remote IP seen by the pipeline.
+///
+/// Used to queue DNS / RDAP enrichment without coupling `core` to those crates.
+pub type RemoteIpObserver = Arc<dyn Fn(IpAddr) + Send + Sync>;
 
 /// Outcome of processing a single connection event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,10 +155,20 @@ fn event_type_to_db(event_type: ConnectionEventType) -> &'static str {
 }
 
 /// Processes collector [`ConnectionEvent`] values into SQLite.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct EventPipeline {
     db: Database,
     collector_id: Option<String>,
+    remote_ip_observer: Option<RemoteIpObserver>,
+}
+
+impl fmt::Debug for EventPipeline {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventPipeline")
+            .field("collector_id", &self.collector_id)
+            .field("has_remote_ip_observer", &self.remote_ip_observer.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl EventPipeline {
@@ -160,12 +177,21 @@ impl EventPipeline {
         Self {
             db,
             collector_id: None,
+            remote_ip_observer: None,
         }
     }
 
     /// Attaches an optional collector identifier stored on new connection rows.
     pub fn with_collector_id(mut self, collector_id: impl Into<String>) -> Self {
         self.collector_id = Some(collector_id.into());
+        self
+    }
+
+    /// Invokes `observer` with each remote IP after a successful persist.
+    ///
+    /// The observer must not block: enrichment workers enqueue via `try_send`.
+    pub fn with_remote_ip_observer(mut self, observer: RemoteIpObserver) -> Self {
+        self.remote_ip_observer = Some(observer);
         self
     }
 
@@ -177,7 +203,13 @@ impl EventPipeline {
     /// Normalizes and persists a single event.
     pub async fn process(&self, event: ConnectionEvent) -> Result<ProcessOutcome, PipelineError> {
         let normalized = NormalizedEvent::from_event(&event)?;
-        self.persist(&normalized).await
+        let outcome = self.persist(&normalized).await?;
+        if let Some(observer) = &self.remote_ip_observer {
+            if let Ok(ip) = normalized.remote_ip.parse::<IpAddr>() {
+                observer(ip);
+            }
+        }
+        Ok(outcome)
     }
 
     /// Drains `event_rx` until the channel closes, processing each event in order.

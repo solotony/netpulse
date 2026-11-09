@@ -646,3 +646,20 @@ where
     .await?;
     Ok(rows)
 }
+
+/// Distinct remote IPs from connection history (for enrichment backfill).
+pub async fn list_distinct_remote_ips<'e, E>(executor: E) -> Result<Vec<String>, DatabaseError>
+where
+    E: SqliteExecutor<'e>,
+{
+    let rows = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT DISTINCT remote_ip
+        FROM connections
+        ORDER BY remote_ip
+        "#,
+    )
+    .fetch_all(executor)
+    .await?;
+    Ok(rows)
+}

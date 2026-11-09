@@ -1,17 +1,26 @@
 //! Tauri-facing monitoring session: wraps [`MonitoringController`] with a
-//! macOS or mock collector.
+//! macOS or mock collector and live DNS / RDAP enrichment workers.
 
-use collector_api::{
-    CollectorCapabilities, CollectorError, NetworkCollector, Platform,
-};
+use std::net::IpAddr;
+use std::str::FromStr;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use collector_api::{CollectorCapabilities, CollectorError, NetworkCollector, Platform};
 use common::ConnectionEvent;
-use database::Database;
+use database::{list_distinct_remote_ips, Database};
+use dns_resolver::{DnsConfig, DnsError, DnsHandle, DnsWorker, HickoryPtrResolver, PtrResolver};
+use ip_enrichment::{
+    EnrichmentConfig, EnrichmentHandle, EnrichmentWorker, ReqwestHttpClient,
+};
 use monitor_core::{
     EventPipeline, MockCollector, MonitoringController, MonitoringState, MonitoringStatus,
+    RemoteIpObserver,
 };
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 /// Collector backend selected when starting monitoring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -112,24 +121,95 @@ fn build_collector(backend: CollectorBackend) -> Result<(RuntimeCollector, &'sta
     }
 }
 
+fn enrichment_observer(enrichment: EnrichmentHandle, dns: DnsHandle) -> RemoteIpObserver {
+    Arc::new(move |ip: IpAddr| {
+        let _ = enrichment.enqueue(ip);
+        let _ = dns.enqueue(ip);
+    })
+}
+
+/// No-op PTR resolver used when the system resolver cannot be created.
+struct DisabledPtrResolver;
+
+#[async_trait]
+impl PtrResolver for DisabledPtrResolver {
+    async fn lookup_ptr(&self, _ip: IpAddr) -> Result<Vec<String>, DnsError> {
+        Ok(Vec::new())
+    }
+}
+
 /// Shared app monitoring session.
 pub struct MonitoringSession {
     db: Database,
     controller: Mutex<Option<MonitoringController<RuntimeCollector>>>,
     backend: Mutex<Option<CollectorBackend>>,
+    enrichment: EnrichmentHandle,
+    dns: DnsHandle,
+    /// Keep workers alive for the session lifetime.
+    _enrichment_worker: EnrichmentWorker,
+    _dns_worker: DnsWorker,
 }
 
 impl MonitoringSession {
     pub fn new(db: Database) -> Self {
+        let enrichment_worker = EnrichmentWorker::spawn(
+            db.clone(),
+            Arc::new(ReqwestHttpClient::default()),
+            EnrichmentConfig::default(),
+        );
+        let dns_config = DnsConfig::default();
+        let dns_worker = match HickoryPtrResolver::new(dns_config.timeout) {
+            Ok(ptr) => DnsWorker::spawn(db.clone(), Arc::new(ptr), dns_config),
+            Err(err) => {
+                warn!(error = %err, "PTR resolver unavailable; reverse DNS disabled");
+                DnsWorker::spawn(
+                    db.clone(),
+                    Arc::new(DisabledPtrResolver),
+                    DnsConfig {
+                        enabled: false,
+                        ..dns_config
+                    },
+                )
+            }
+        };
+        let enrichment = enrichment_worker.handle();
+        let dns = dns_worker.handle();
         Self {
             db,
             controller: Mutex::new(None),
             backend: Mutex::new(None),
+            enrichment,
+            dns,
+            _enrichment_worker: enrichment_worker,
+            _dns_worker: dns_worker,
         }
     }
 
     pub fn database(&self) -> &Database {
         &self.db
+    }
+
+    fn pipeline_with_enrichment(&self, collector_id: &str) -> EventPipeline {
+        EventPipeline::new(self.db.clone())
+            .with_collector_id(collector_id)
+            .with_remote_ip_observer(enrichment_observer(
+                self.enrichment.clone(),
+                self.dns.clone(),
+            ))
+    }
+
+    async fn enqueue_known_remote_ips(&self) {
+        match list_distinct_remote_ips(self.db.pool()).await {
+            Ok(ips) => {
+                for ip_str in ips {
+                    if let Ok(ip) = IpAddr::from_str(&ip_str) {
+                        let _ = self.enrichment.enqueue(ip);
+                        let _ = self.dns.enqueue(ip);
+                    }
+                }
+            }
+            Err(err) => warn!(error = %err, "failed to backfill enrichment for remote IPs"),
+        }
     }
 
     pub async fn status(&self) -> MonitoringStatusDto {
@@ -156,12 +236,15 @@ impl MonitoringSession {
         }
 
         let (collector, collector_id) = build_collector(backend)?;
-        let pipeline = EventPipeline::new(self.db.clone()).with_collector_id(collector_id);
+        let pipeline = self.pipeline_with_enrichment(collector_id);
         let mut controller = MonitoringController::new(pipeline, collector);
         controller
             .start()
             .await
             .map_err(|err| err.to_string())?;
+
+        // Enrich already-stored remotes (and newly opened ones via the observer).
+        self.enqueue_known_remote_ips().await;
 
         let status = controller.status().await;
         *guard = Some(controller);
@@ -202,6 +285,7 @@ impl MonitoringSession {
         let controller = guard
             .as_mut()
             .ok_or_else(|| "monitoring is not started".to_owned())?;
+        // Pipeline already carries the enrichment observer from start().
         controller.resume().await.map_err(|err| err.to_string())?;
         let status = controller.status().await;
         let backend = *self.backend.lock().await;

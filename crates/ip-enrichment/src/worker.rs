@@ -8,13 +8,13 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use database::{
     get_bool_setting, get_i64_setting, get_ip_winning_network, list_networks,
-    store_winning_ip_network, upsert_ip_address, Database, SETTING_ASN_INFO,
+    store_winning_ip_network, upsert_ip_address, Database, NewNetwork, SETTING_ASN_INFO,
     SETTING_CACHE_TTL_SECONDS, SETTING_COUNTRY_INFO, SETTING_IP_ENRICHMENT,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
-use crate::classify::requires_public_lookup;
+use crate::classify::{classify, requires_public_lookup, IpClass, SpecialUseClass};
 use crate::http::HttpClient;
 use crate::match_prefix::{longest_prefix_match, NetworkPrefix};
 use crate::rdap::{RdapClient, RdapClientConfig};
@@ -59,14 +59,11 @@ struct EnrichmentRequest {
 impl EnrichmentHandle {
     /// Queues `ip` for enrichment without waiting for HTTP or persistence.
     ///
-    /// Returns immediately. Special-use addresses and a disabled construction
-    /// flag never enter the queue. A full channel drops the request rather than
-    /// blocking the caller.
+    /// Returns immediately. A disabled construction flag never enters the queue.
+    /// Special-use addresses are queued for local labeling (no HTTP). A full
+    /// channel drops the request rather than blocking the caller.
     pub fn enqueue(&self, ip: IpAddr) -> bool {
         if !self.construction_enabled {
-            return false;
-        }
-        if !requires_public_lookup(ip) {
             return false;
         }
         self.tx
@@ -76,7 +73,7 @@ impl EnrichmentHandle {
 
     /// Like [`enqueue`] but notifies when the worker finishes processing this IP.
     pub async fn enqueue_and_wait(&self, ip: IpAddr) -> bool {
-        if !self.construction_enabled || !requires_public_lookup(ip) {
+        if !self.construction_enabled {
             return false;
         }
         let (done_tx, done_rx) = oneshot::channel();
@@ -152,12 +149,18 @@ async fn worker_loop<C>(
     while let Some(request) = rx.recv().await {
         let EnrichmentRequest { ip, done } = request;
 
-        if !requires_public_lookup(ip) {
+        if in_flight.contains(&ip) {
             signal_done(done);
             continue;
         }
 
-        if in_flight.contains(&ip) {
+        // Special-use addresses get a local network label and never hit RDAP.
+        if !requires_public_lookup(ip) {
+            if let Err(err) = persist_special_use_network(&db, ip).await {
+                warn!(error = %err, %ip, "failed to persist special-use network");
+            } else {
+                in_memory_done.insert(ip, Instant::now());
+            }
             signal_done(done);
             continue;
         }
@@ -244,6 +247,46 @@ fn signal_done(done: Option<oneshot::Sender<()>>) {
     if let Some(tx) = done {
         let _ = tx.send(());
     }
+}
+
+fn special_use_label(class: SpecialUseClass) -> &'static str {
+    match class {
+        SpecialUseClass::Private => "Private",
+        SpecialUseClass::Loopback => "Loopback",
+        SpecialUseClass::LinkLocal => "Link-local",
+        SpecialUseClass::UniqueLocal => "Unique local",
+        SpecialUseClass::Multicast => "Multicast",
+        SpecialUseClass::Unspecified => "Unspecified",
+    }
+}
+
+async fn persist_special_use_network(db: &Database, ip: IpAddr) -> Result<(), EnrichmentError> {
+    let IpClass::SpecialUse(class) = classify(ip) else {
+        return Ok(());
+    };
+    // Skip if already associated.
+    let ip_str = ip.to_string();
+    let ip_id = upsert_ip_address(db.pool(), &ip_str, Utc::now()).await?;
+    if get_ip_winning_network(db.pool(), ip_id).await?.is_some() {
+        return Ok(());
+    }
+    let label = special_use_label(class);
+    let cidr = match ip {
+        IpAddr::V4(_) => format!("{ip}/32"),
+        IpAddr::V6(_) => format!("{ip}/128"),
+    };
+    let network = NewNetwork {
+        cidr,
+        net_range: Some(ip_str.clone()),
+        net_name: Some(label.to_owned()),
+        organization: Some(format!("Special-use ({label})")),
+        asn: None,
+        country: None,
+        source: Some("local".into()),
+        updated_at: Utc::now(),
+    };
+    store_winning_ip_network(db.pool(), &ip_str, &network, Utc::now()).await?;
+    Ok(())
 }
 
 async fn cached_network_for_ip(
@@ -470,13 +513,18 @@ mod tests {
             "fe80::1",
         ] {
             let addr = IpAddr::from_str(ip).unwrap();
-            assert!(!handle.enqueue(addr), "{ip} must not enqueue");
-            assert!(!handle.enqueue_and_wait(addr).await, "{ip} must not wait-enqueue");
+            assert!(
+                handle.enqueue_and_wait(addr).await,
+                "{ip} should enqueue for local labeling"
+            );
+            let network = winning_for(&db, ip).await;
+            assert!(
+                network.net_name.is_some(),
+                "{ip} should get a local network label"
+            );
         }
 
-        // Give the worker a moment; nothing should have been queued.
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        assert_eq!(http.call_count(), 0);
+        assert_eq!(http.call_count(), 0, "special-use must never call RDAP");
         worker.shutdown().await;
     }
 

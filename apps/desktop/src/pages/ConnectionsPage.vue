@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import AppShell from "../layouts/AppShell.vue";
 import { exportConnections, type ExportFormat } from "../services/export";
 import { useConnectionsStore } from "../stores/connections";
@@ -14,6 +14,20 @@ const exportNotice = ref<string | null>(null);
 const exporting = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | null = null;
 let exportTimer: ReturnType<typeof setTimeout> | null = null;
+let refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+function syncAutoRefresh() {
+  const running = monitoring.status?.state === "running";
+  if (running && !refreshTimer) {
+    refreshTimer = setInterval(() => {
+      void store.load();
+      void monitoring.refreshStatus();
+    }, 5000);
+  } else if (!running && refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+}
 
 const allVisibleSelected = computed(() => {
   const ids = store.rows.map((row) => row.id);
@@ -22,8 +36,20 @@ const allVisibleSelected = computed(() => {
 
 onMounted(() => {
   void store.load();
-  void monitoring.refreshStatus();
+  void monitoring.refreshStatus().then(() => syncAutoRefresh());
 });
+
+onUnmounted(() => {
+  if (refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+});
+
+watch(
+  () => monitoring.status?.state,
+  () => syncAutoRefresh(),
+);
 
 function sortIndicator(column: ConnectionSortBy | null): string {
   if (!column || store.sortBy !== column) {

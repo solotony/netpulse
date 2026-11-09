@@ -49,9 +49,10 @@ pub use settings::{
 pub use writes::{
     find_open_connection, get_domain, get_ip_address, get_ip_winning_network, get_network,
     insert_connection, insert_connection_event, insert_connection_for_process, insert_process,
-    list_domains_for_ip, list_ip_domains, list_networks, set_ip_winning_network,
-    store_winning_ip_network, update_connection, update_connection_exec, update_process,
-    upsert_domain, upsert_ip_address, upsert_ip_domain, upsert_network, upsert_process,
+    list_distinct_remote_ips, list_domains_for_ip, list_ip_domains, list_networks,
+    set_ip_winning_network, store_winning_ip_network, update_connection, update_connection_exec,
+    update_process, upsert_domain, upsert_ip_address, upsert_ip_domain, upsert_network,
+    upsert_process,
 };
 
 /// Crate identity used by unit tests and diagnostics.
