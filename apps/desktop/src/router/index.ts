@@ -3,6 +3,7 @@ import ConnectionsPage from "../pages/ConnectionsPage.vue";
 import DomainsPage from "../pages/DomainsPage.vue";
 import IpAddressesPage from "../pages/IpAddressesPage.vue";
 import NetworksPage from "../pages/NetworksPage.vue";
+import ProbePage from "../pages/ProbePage.vue";
 import ProcessesPage from "../pages/ProcessesPage.vue";
 import SettingsPage from "../pages/SettingsPage.vue";
 import StatisticsPage from "../pages/StatisticsPage.vue";
@@ -46,6 +47,12 @@ export const router = createRouter({
       name: "statistics",
       component: StatisticsPage,
       meta: { title: "Statistics" },
+    },
+    {
+      path: "/probe",
+      name: "probe",
+      component: ProbePage,
+      meta: { title: "Probe" },
     },
     {
       path: "/settings",

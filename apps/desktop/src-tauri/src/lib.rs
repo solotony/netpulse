@@ -4,6 +4,7 @@ mod export;
 mod history;
 mod mock_connections;
 mod monitoring;
+mod probe;
 mod settings;
 mod stats;
 
@@ -14,6 +15,7 @@ use export::export_connection_history;
 use history::{
     list_domains, list_ip_addresses, list_networks, list_processes, query_connection_history,
 };
+use probe::{diff_probe, list_probe_applications};
 use mock_connections::{
     seed_mock_and_list_connections, ConnectionsPage, DEFAULT_PAGE_SIZE,
 };
@@ -438,6 +440,8 @@ pub fn run() {
             list_ip_addresses,
             list_domains,
             list_networks,
+            list_probe_applications,
+            diff_probe,
             query_statistics,
             start_monitoring,
             stop_monitoring,

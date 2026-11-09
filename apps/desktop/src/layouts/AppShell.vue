@@ -11,6 +11,7 @@ const navItems = [
   { to: "/domains", label: "Domains" },
   { to: "/networks", label: "Networks" },
   { to: "/statistics", label: "Statistics" },
+  { to: "/probe", label: "Probe" },
   { to: "/settings", label: "Settings" },
 ] as const;
 

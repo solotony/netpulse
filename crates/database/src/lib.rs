@@ -5,6 +5,7 @@ mod error;
 mod export;
 mod maintenance;
 mod models;
+mod probe;
 mod queries;
 mod settings;
 mod writes;
@@ -32,6 +33,10 @@ pub use export::{
     export_connection_history, export_connection_history_to_path, describe_export_filter,
     escape_tsv_field, ExportFormat, ExportOptions, ExportSummary, EXPORT_CHUNK_SIZE,
     TSV_COLUMNS,
+};
+pub use probe::{
+    app_key_from_path, app_key_kind, diff_probe, list_probe_apps, AppKeyKind, ProbeAppRow,
+    ProbeDiffQuery, ProbeDiffResult, ProbeDiffRow,
 };
 pub use queries::{
     query_connection_history, ConnectionHistoryFilter, ConnectionHistoryPage,
