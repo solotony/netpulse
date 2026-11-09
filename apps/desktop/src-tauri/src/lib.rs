@@ -1,5 +1,6 @@
 //! Network Monitor Tauri backend.
 
+mod export;
 mod history;
 mod mock_connections;
 mod monitoring;
@@ -9,6 +10,7 @@ mod stats;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use export::export_connection_history;
 use history::{
     list_domains, list_ip_addresses, list_networks, list_processes, query_connection_history,
 };
@@ -309,6 +311,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             list_mock_connections,
             query_connection_history,
+            export_connection_history,
             list_processes,
             list_ip_addresses,
             list_domains,

@@ -7,6 +7,7 @@ use std::fmt;
 pub enum DatabaseError {
     Sqlx(sqlx::Error),
     Migrate(sqlx::migrate::MigrateError),
+    Io(std::io::Error),
 }
 
 impl fmt::Display for DatabaseError {
@@ -14,6 +15,7 @@ impl fmt::Display for DatabaseError {
         match self {
             Self::Sqlx(err) => write!(f, "database error: {err}"),
             Self::Migrate(err) => write!(f, "migration error: {err}"),
+            Self::Io(err) => write!(f, "io error: {err}"),
         }
     }
 }
@@ -23,6 +25,7 @@ impl std::error::Error for DatabaseError {
         match self {
             Self::Sqlx(err) => Some(err),
             Self::Migrate(err) => Some(err),
+            Self::Io(err) => Some(err),
         }
     }
 }
@@ -36,5 +39,11 @@ impl From<sqlx::Error> for DatabaseError {
 impl From<sqlx::migrate::MigrateError> for DatabaseError {
     fn from(value: sqlx::migrate::MigrateError) -> Self {
         Self::Migrate(value)
+    }
+}
+
+impl From<std::io::Error> for DatabaseError {
+    fn from(value: std::io::Error) -> Self {
+        Self::Io(value)
     }
 }

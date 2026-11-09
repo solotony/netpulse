@@ -2,6 +2,7 @@
 
 mod entities;
 mod error;
+mod export;
 mod maintenance;
 mod models;
 mod queries;
@@ -26,6 +27,11 @@ pub use entities::{
     list_domains, list_ip_addresses, list_networks_page, list_processes, DomainListPage,
     DomainListRow, EntityListQuery, IpListPage, IpListRow, NetworkListPage, NetworkListRow,
     ProcessListPage, ProcessListRow,
+};
+pub use export::{
+    export_connection_history, export_connection_history_to_path, describe_export_filter,
+    escape_tsv_field, ExportFormat, ExportOptions, ExportSummary, EXPORT_CHUNK_SIZE,
+    TSV_COLUMNS,
 };
 pub use queries::{
     query_connection_history, ConnectionHistoryFilter, ConnectionHistoryPage,
@@ -197,6 +203,24 @@ impl Database {
         query: &ConnectionHistoryQuery,
     ) -> Result<ConnectionHistoryPage, DatabaseError> {
         queries::query_connection_history(&self.pool, query).await
+    }
+
+    /// Streams matching connection history to `writer` as TXT or TSV (chunked pages).
+    pub async fn export_connection_history<W: std::io::Write>(
+        &self,
+        options: &ExportOptions,
+        writer: &mut W,
+    ) -> Result<ExportSummary, DatabaseError> {
+        export::export_connection_history(&self.pool, options, writer).await
+    }
+
+    /// Streams matching connection history to a filesystem path.
+    pub async fn export_connection_history_to_path(
+        &self,
+        options: &ExportOptions,
+        path: impl AsRef<std::path::Path>,
+    ) -> Result<ExportSummary, DatabaseError> {
+        export::export_connection_history_to_path(&self.pool, options, path).await
     }
 
     /// Paginated process list with connection aggregations.

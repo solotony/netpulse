@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { fetchConnections } from "../services/connections";
+import { exportConnections, type ExportFormat } from "../services/export";
 import { useMonitoringStore } from "../stores/monitoring";
 import {
   mapConnectionRow,
@@ -19,9 +20,12 @@ const emit = defineEmits<{
 
 const monitoring = useMonitoringStore();
 const loading = ref(false);
+const exporting = ref(false);
 const error = ref<string | null>(null);
+const exportNotice = ref<string | null>(null);
 const rows = ref<ConnectionTableRow[]>([]);
 const total = ref(0);
+let exportTimer: ReturnType<typeof setTimeout> | null = null;
 
 const filterKey = computed(() => JSON.stringify(props.filter));
 
@@ -48,6 +52,38 @@ async function load() {
   }
 }
 
+function showExportNotice(message: string) {
+  exportNotice.value = message;
+  if (exportTimer) {
+    clearTimeout(exportTimer);
+  }
+  exportTimer = setTimeout(() => {
+    exportNotice.value = null;
+  }, 3500);
+}
+
+async function onExport(format: ExportFormat) {
+  if (exporting.value) {
+    return;
+  }
+  exporting.value = true;
+  try {
+    const result = await exportConnections({
+      format,
+      filter: props.filter,
+    });
+    if (result.cancelled) {
+      showExportNotice("Export cancelled");
+    } else {
+      showExportNotice(`Exported ${result.rowsWritten} row(s)`);
+    }
+  } catch (err) {
+    showExportNotice(err instanceof Error ? err.message : String(err));
+  } finally {
+    exporting.value = false;
+  }
+}
+
 watch(
   filterKey,
   () => {
@@ -63,8 +99,27 @@ watch(
       <div>
         <h2>{{ title }}</h2>
         <p class="meta">{{ total }} connection{{ total === 1 ? "" : "s" }}</p>
+        <p v-if="exportNotice" class="meta notice">{{ exportNotice }}</p>
       </div>
-      <button type="button" class="close" @click="emit('close')">Close</button>
+      <div class="header-actions">
+        <button
+          type="button"
+          class="close"
+          :disabled="exporting || loading || total === 0"
+          @click="onExport('txt')"
+        >
+          Export .txt
+        </button>
+        <button
+          type="button"
+          class="close"
+          :disabled="exporting || loading || total === 0"
+          @click="onExport('tsv')"
+        >
+          Export .tsv
+        </button>
+        <button type="button" class="close" @click="emit('close')">Close</button>
+      </div>
     </header>
 
     <p v-if="error" class="error">{{ error }}</p>
@@ -128,6 +183,13 @@ watch(
   font-weight: 650;
 }
 
+.header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .close {
   border: 1px solid var(--border);
   background: var(--bg);
@@ -136,6 +198,15 @@ watch(
   padding: 4px 8px;
   font-size: 12px;
   cursor: pointer;
+}
+
+.close:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.notice {
+  color: var(--accent);
 }
 
 .meta,

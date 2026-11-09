@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import AppShell from "../layouts/AppShell.vue";
+import { exportConnections, type ExportFormat } from "../services/export";
 import { useConnectionsStore } from "../stores/connections";
 import { useMonitoringStore } from "../stores/monitoring";
 import { CONNECTION_COLUMNS, type ConnectionSortBy } from "../types/connections";
@@ -9,7 +10,10 @@ import { copyText } from "../utils/clipboard";
 const store = useConnectionsStore();
 const monitoring = useMonitoringStore();
 const copyNotice = ref<string | null>(null);
+const exportNotice = ref<string | null>(null);
+const exporting = ref(false);
 let copyTimer: ReturnType<typeof setTimeout> | null = null;
+let exportTimer: ReturnType<typeof setTimeout> | null = null;
 
 const allVisibleSelected = computed(() => {
   const ids = store.rows.map((row) => row.id);
@@ -37,6 +41,50 @@ async function onCopyCell(value: string) {
   copyTimer = setTimeout(() => {
     copyNotice.value = null;
   }, 1200);
+}
+
+function showExportNotice(message: string) {
+  exportNotice.value = message;
+  if (exportTimer) {
+    clearTimeout(exportTimer);
+  }
+  exportTimer = setTimeout(() => {
+    exportNotice.value = null;
+  }, 3500);
+}
+
+async function onExport(
+  scope: "filtered" | "selected" | "all",
+  format: ExportFormat,
+) {
+  if (exporting.value) {
+    return;
+  }
+  if (scope === "selected" && store.selectedIds.size === 0) {
+    showExportNotice("Select rows to export");
+    return;
+  }
+  exporting.value = true;
+  try {
+    const result = await exportConnections({
+      format,
+      filter:
+        scope === "filtered"
+          ? { ...store.filter }
+          : {},
+      selectedIds:
+        scope === "selected" ? [...store.selectedIds] : undefined,
+    });
+    if (result.cancelled) {
+      showExportNotice("Export cancelled");
+    } else {
+      showExportNotice(`Exported ${result.rowsWritten} row(s)`);
+    }
+  } catch (err) {
+    showExportNotice(err instanceof Error ? err.message : String(err));
+  } finally {
+    exporting.value = false;
+  }
 }
 
 function cellValue(
@@ -80,6 +128,44 @@ function cellValue(
       <button type="button" :disabled="store.loading" @click="store.load()">
         {{ store.loading ? "Loading…" : "Refresh" }}
       </button>
+      <div class="export-group">
+        <span class="meta">Export</span>
+        <button
+          type="button"
+          :disabled="exporting || store.loading"
+          @click="onExport('filtered', 'txt')"
+        >
+          Filtered .txt
+        </button>
+        <button
+          type="button"
+          :disabled="exporting || store.loading"
+          @click="onExport('filtered', 'tsv')"
+        >
+          Filtered .tsv
+        </button>
+        <button
+          type="button"
+          :disabled="exporting || store.loading || store.selectedIds.size === 0"
+          @click="onExport('selected', 'txt')"
+        >
+          Selected .txt
+        </button>
+        <button
+          type="button"
+          :disabled="exporting || store.loading || store.selectedIds.size === 0"
+          @click="onExport('selected', 'tsv')"
+        >
+          Selected .tsv
+        </button>
+        <button
+          type="button"
+          :disabled="exporting || store.loading"
+          @click="onExport('all', 'tsv')"
+        >
+          All .tsv
+        </button>
+      </div>
       <span v-if="store.page" class="meta">
         {{ store.page.total }} connection{{ store.page.total === 1 ? "" : "s" }}
         <template v-if="store.selectedIds.size">
@@ -87,6 +173,7 @@ function cellValue(
         </template>
       </span>
       <span v-if="copyNotice" class="meta notice">{{ copyNotice }}</span>
+      <span v-if="exportNotice" class="meta notice">{{ exportNotice }}</span>
       <span class="collector" :data-state="monitoring.status?.state ?? 'stopped'">
         Collector: {{ monitoring.status?.state ?? "stopped" }}
       </span>
@@ -229,6 +316,13 @@ function cellValue(
 .pager {
   margin-top: 10px;
   margin-bottom: 0;
+}
+
+.export-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
 .toolbar button,

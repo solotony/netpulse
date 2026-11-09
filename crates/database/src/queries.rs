@@ -164,7 +164,7 @@ fn sort_dir_sql(dir: SortDirection) -> &'static str {
 }
 
 /// Correlated enrichment subqueries shared by SELECT and ORDER BY aliases.
-const DOMAIN_SUBQUERY: &str = r#"
+pub(crate) const DOMAIN_SUBQUERY: &str = r#"
     (
         SELECT d.domain
         FROM ip_addresses ia
@@ -176,7 +176,7 @@ const DOMAIN_SUBQUERY: &str = r#"
     )
 "#;
 
-const NETWORK_CIDR_SUBQUERY: &str = r#"
+pub(crate) const NETWORK_CIDR_SUBQUERY: &str = r#"
     (
         SELECT n.cidr
         FROM ip_addresses ia
@@ -188,7 +188,7 @@ const NETWORK_CIDR_SUBQUERY: &str = r#"
     )
 "#;
 
-const NETWORK_NAME_SUBQUERY: &str = r#"
+pub(crate) const NETWORK_NAME_SUBQUERY: &str = r#"
     (
         SELECT n.net_name
         FROM ip_addresses ia
@@ -200,7 +200,7 @@ const NETWORK_NAME_SUBQUERY: &str = r#"
     )
 "#;
 
-const ORGANIZATION_SUBQUERY: &str = r#"
+pub(crate) const ORGANIZATION_SUBQUERY: &str = r#"
     (
         SELECT n.organization
         FROM ip_addresses ia
@@ -212,7 +212,41 @@ const ORGANIZATION_SUBQUERY: &str = r#"
     )
 "#;
 
-fn push_filters<'a>(qb: &mut QueryBuilder<'a, sqlx::Sqlite>, filter: &'a ConnectionHistoryFilter) {
+pub(crate) const ASN_SUBQUERY: &str = r#"
+    (
+        SELECT n.asn
+        FROM ip_addresses ia
+        INNER JOIN ip_networks inw ON inw.ip_id = ia.id
+        INNER JOIN networks n ON n.id = inw.network_id
+        WHERE ia.ip = c.remote_ip
+        ORDER BY n.updated_at DESC, n.id ASC
+        LIMIT 1
+    )
+"#;
+
+/// Applies AND filters for history/export queries. Optional `ids` restricts to selected rows.
+pub(crate) fn push_filters<'a>(
+    qb: &mut QueryBuilder<'a, sqlx::Sqlite>,
+    filter: &'a ConnectionHistoryFilter,
+    ids: Option<&'a [i64]>,
+) {
+    if let Some(selected) = ids {
+        if selected.is_empty() {
+            qb.push(" AND 0 = 1");
+        } else {
+            qb.push(" AND c.id IN (");
+            let mut first = true;
+            for id in selected {
+                if !first {
+                    qb.push(", ");
+                }
+                first = false;
+                qb.push_bind(*id);
+            }
+            qb.push(")");
+        }
+    }
+
     if let Some(ref text) = filter.text {
         let trimmed = text.trim();
         if !trimmed.is_empty() {
@@ -358,6 +392,14 @@ fn push_filters<'a>(qb: &mut QueryBuilder<'a, sqlx::Sqlite>, filter: &'a Connect
     }
 }
 
+/// Convenience wrapper used by paginated history queries (no id restriction).
+fn push_history_filters<'a>(
+    qb: &mut QueryBuilder<'a, sqlx::Sqlite>,
+    filter: &'a ConnectionHistoryFilter,
+) {
+    push_filters(qb, filter, None);
+}
+
 fn clamp_limit(limit: u32) -> u32 {
     limit.clamp(1, MAX_PAGE_SIZE)
 }
@@ -380,7 +422,7 @@ pub async fn query_connection_history(
         WHERE 1 = 1
         "#,
     );
-    push_filters(&mut count_qb, &query.filter);
+    push_history_filters(&mut count_qb, &query.filter);
     let total: i64 = count_qb.build_query_scalar().fetch_one(pool).await?;
 
     let mut list_qb = QueryBuilder::new(
@@ -417,7 +459,7 @@ pub async fn query_connection_history(
         WHERE 1 = 1
         "#,
     );
-    push_filters(&mut list_qb, &query.filter);
+    push_history_filters(&mut list_qb, &query.filter);
 
     list_qb.push(" ORDER BY ");
     list_qb.push(sort_sql(query.sort_by));

@@ -113,7 +113,8 @@ pub struct HistoryQueryDto {
     pub page_size: Option<u32>,
 }
 
-fn parse_rfc3339(value: Option<&str>) -> Result<Option<DateTime<Utc>>, String> {
+/// Parses an optional RFC3339 / datetime-local string into UTC.
+pub(crate) fn parse_rfc3339(value: Option<&str>) -> Result<Option<DateTime<Utc>>, String> {
     match value.map(str::trim).filter(|s| !s.is_empty()) {
         None => Ok(None),
         Some(raw) => DateTime::parse_from_rfc3339(raw)
