@@ -14,7 +14,7 @@ Documented decisions for Phase 1 / Step 1. These constrain the first working rel
 - **Single process:** UI and collector run in **one process** (Tauri host + Rust backend).
 - **Window close:** Closing the main window **hides to the system tray** when background mode is enabled (default); monitoring continues. Quit from the tray menu (or with background mode off) stops the collector.
 - **Login autostart:** Use **Tauri autostart** so the app can launch at user login (persisted in SQLite settings).
-- **Tray icon:** Uses the default app window icon (not a dedicated monochrome menu-bar template).
+- **Status icon:** macOS menu bar uses the white template glyph (`icons/menu-icon.png`). Windows and Linux trays use the color icon (`icons/tray-icon.png`).
 
 ## Enrichment and DNS
 

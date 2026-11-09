@@ -20,11 +20,17 @@ use mock_connections::{
 use monitoring::{CollectorBackend, MonitoringSession, MonitoringStatusDto};
 use settings::{AppSettings, DatabaseInfoDto};
 use stats::query_statistics;
-use tauri::menu::{Menu, MenuItem};
+use tauri::image::Image;
+use tauri::menu::{
+    AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
+};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt as AutostartExt;
+
+const APP_NAME: &str = "NetPulse";
+const APP_FULL_NAME: &str = "NetPulse - Ultimate Network Monitor";
 
 /// Opens the app SQLite database under the platform app-data directory.
 async fn open_app_database(app: &tauri::AppHandle) -> Result<database::Database, String> {
@@ -213,6 +219,99 @@ async fn clear_history(app: tauri::AppHandle) -> Result<DatabaseInfoDto, String>
     settings::clear_history(session.database()).await
 }
 
+/// Color icon for the system tray on Windows and Linux, and for About.
+fn load_tray_icon() -> tauri::Result<Image<'static>> {
+    Image::from_bytes(include_bytes!("../icons/tray-icon.png"))
+}
+
+/// Monochrome glyph for the macOS menu bar (and other template status icons).
+#[cfg(target_os = "macos")]
+fn load_menu_bar_icon() -> tauri::Result<Image<'static>> {
+    Image::from_bytes(include_bytes!("../icons/menu-icon.png"))
+}
+
+fn about_metadata(version: &str, icon: &Image<'static>) -> AboutMetadata<'static> {
+    AboutMetadata {
+        name: Some(APP_FULL_NAME.to_string()),
+        version: Some(version.to_string()),
+        icon: Some(icon.clone()),
+        ..Default::default()
+    }
+}
+
+/// Replaces the default macOS menu so About shows the NetPulse name and icon.
+#[cfg(target_os = "macos")]
+fn install_app_menu(app: &tauri::App, icon: &Image<'static>) -> tauri::Result<()> {
+    let version = app.package_info().version.to_string();
+    let app_menu = Submenu::with_items(
+        app,
+        APP_NAME,
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, Some(about_metadata(&version, icon)))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+    let file_menu = Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[&PredefinedMenuItem::close_window(app, None)?],
+    )?;
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let view_menu = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[&PredefinedMenuItem::fullscreen(app, None)?],
+    )?;
+    let window_menu = Submenu::with_id_and_items(
+        app,
+        WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::close_window(app, None)?,
+        ],
+    )?;
+    let help_menu = Submenu::with_id_and_items(app, HELP_SUBMENU_ID, "Help", true, &[])?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &app_menu,
+            &file_menu,
+            &edit_menu,
+            &view_menu,
+            &window_menu,
+            &help_menu,
+        ],
+    )?;
+    app.set_menu(menu)?;
+    Ok(())
+}
+
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -262,16 +361,37 @@ pub fn run() {
 
             app.manage(session);
 
-            let show_item = MenuItem::with_id(app, "show", "Show Network Monitor", true, None::<&str>)?;
+            let tray_icon = load_tray_icon()?;
+            #[cfg(target_os = "macos")]
+            let (status_icon, status_is_template) = (load_menu_bar_icon()?, true);
+            #[cfg(not(target_os = "macos"))]
+            let (status_icon, status_is_template) = (tray_icon.clone(), false);
+            #[cfg(target_os = "macos")]
+            install_app_menu(app, &tray_icon)?;
+
+            let version = app.package_info().version.to_string();
+            let about_item = PredefinedMenuItem::about(
+                app,
+                Some("About"),
+                Some(about_metadata(&version, &tray_icon)),
+            )?;
+            let show_item = MenuItem::with_id(app, "show", "Show NetPulse", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &about_item,
+                    &PredefinedMenuItem::separator(app)?,
+                    &show_item,
+                    &quit_item,
+                ],
+            )?;
 
             let _tray = TrayIconBuilder::new()
-                .icon(app.default_window_icon().cloned().ok_or_else(|| {
-                    std::io::Error::other("missing default window icon for tray")
-                })?)
+                .icon(status_icon)
+                .icon_as_template(status_is_template)
                 .menu(&menu)
-                .tooltip("Network Monitor")
+                .tooltip(APP_FULL_NAME)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
                     "quit" => {
@@ -286,7 +406,6 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Limitation: tray uses the app icon (not a dedicated monochrome template).
             Ok(())
         })
         .on_window_event(|window, event| {

@@ -14,13 +14,16 @@ const navItems = [
   { to: "/settings", label: "Settings" },
 ] as const;
 
-const title = computed(() => String(route.meta.title ?? "Network Monitor"));
+const title = computed(() => String(route.meta.title ?? "NetPulse"));
 </script>
 
 <template>
   <div class="shell">
     <aside class="sidebar">
-      <div class="brand">Network Monitor</div>
+      <div class="brand">
+        <div class="brand-name">NetPulse</div>
+        <div class="brand-tag">Ultimate Network Monitor</div>
+      </div>
       <nav class="nav">
         <RouterLink
           v-for="item in navItems"
@@ -61,9 +64,19 @@ const title = computed(() => String(route.meta.title ?? "Network Monitor"));
 
 .brand {
   padding: 16px 14px 12px;
+  letter-spacing: 0.01em;
+}
+
+.brand-name {
   font-size: 13px;
   font-weight: 650;
-  letter-spacing: 0.01em;
+}
+
+.brand-tag {
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-muted);
 }
 
 .nav {
