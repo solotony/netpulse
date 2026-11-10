@@ -1,0 +1,16 @@
+---
+description: Vue frontend testing requirements 
+globs: src/**/*
+alwaysApply: false
+---
+
+# Web testing
+
+When changing the Vue frontend under `src/`:
+
+1. Prefer tests next to the code or under `src/**/__tests__/` / `e2e/`.
+2. New logic gets unit (Vitest) and/or component (Vue Test Utils) coverage; critical UI flows use Playwright.
+3. Before finishing a stage: `npm run typecheck`, `npm test`, `npm run build`; for UI flows also `npm run test:e2e`.
+4. Do not delete or weaken tests only to make CI green.
+
+Playwright selectors: roles / accessible name; otherwise a stable `data-testid`.

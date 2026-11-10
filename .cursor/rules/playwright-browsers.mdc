@@ -1,0 +1,27 @@
+---
+description: Do not install Playwright or Chromium; escalate browser/setup failures to a human
+alwaysApply: true
+---
+
+# Playwright / Chromium — already installed
+
+Playwright and Chromium are already installed in this environment. Do **not** install, download, or reinstall them.
+
+## Forbidden
+
+- `npx playwright install` / `playwright install` (any browser, including chromium)
+- `npx playwright install-deps` / OS package installs for browser deps
+- Adding Playwright or Chromium as a new install step in scripts, CI, Docker, or docs “to fix” a local failure
+- Workarounds that fetch browsers (custom download URLs, `PLAYWRIGHT_BROWSERS_PATH` reinstall, etc.)
+
+## Allowed
+
+- Run existing e2e commands as documented (`npm run test:e2e`).
+- Fix **application or test code** when failures are clearly not about missing browsers.
+
+## On error
+
+If Playwright/Chromium is missing, version-mismatched, or browser launch fails:
+
+1. **Stop** — do not install or download browsers.
+2. **Call a human** — report the exact error and what you were running; ask them to fix the environment.

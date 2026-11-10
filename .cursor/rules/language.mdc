@@ -1,0 +1,12 @@
+---
+description: Language for reasoning, work, and replies — English by default; Russian only on RUS!/РУС!
+alwaysApply: true
+---
+
+# Language
+
+- Do all work in **English** (code, commits, plans, comments, docs, replies).
+- **Reason in English** as well: internal thinking, analysis, and step-by-step reasoning stay in English even when the user writes in another language.
+- If the user writes in Russian, **translate the prompt into English** (internally) and proceed in English.
+- Reply in **Russian only** when the user explicitly types `RUS!` or `РУС!` in that message.
+- Otherwise always answer in English, even if the prompt was in Russian.
