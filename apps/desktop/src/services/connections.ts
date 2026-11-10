@@ -24,22 +24,6 @@ export async function fetchConnections(
   );
 }
 
-/**
- * Seeds scripted mock rows when the DB is empty (dev convenience), then returns
- * a real history page.
- */
-export async function fetchConnectionsWithOptionalSeed(
-  query: Partial<ConnectionsPageQuery> & { filter?: ConnectionsPageQuery["filter"] } = {},
-): Promise<ConnectionsPage> {
-  const page = await fetchConnections(query);
-  if (page.total > 0) {
-    return page;
-  }
-  // Optional seed path: only runs when history is empty.
-  await invoke("list_mock_connections", { page: 1, pageSize: 1 });
-  return fetchConnections(query);
-}
-
 export interface ProcessRow {
   id: number;
   processName: string | null;
@@ -135,6 +119,8 @@ export interface NetworkRow {
   asn: number | null;
   organization: string | null;
   country: string | null;
+  groupId: number | null;
+  groupName: string | null;
   ipCount: number;
   connectionCount: number;
   firstSeenAt: string | null;

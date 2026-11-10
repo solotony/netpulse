@@ -31,6 +31,11 @@ export const useProbeStore = defineStore("probe", () => {
   const appFilter = ref("");
 
   const selectedCount = computed(() => selectedKeys.value.size);
+  const newIpCount = computed(
+    () => rows.value.filter((row) => row.origin === "new").length,
+  );
+
+  let refreshToken = 0;
 
   const filteredApps = computed(() => {
     const q = appFilter.value.trim().toLowerCase();
@@ -60,6 +65,8 @@ export const useProbeStore = defineStore("probe", () => {
       apps.value = [];
       return;
     }
+    const token = refreshToken;
+    const windowStart = prepareStart.value;
     const windowEnd = sessionWindowEnd();
     if (!windowEnd) {
       apps.value = [];
@@ -67,7 +74,8 @@ export const useProbeStore = defineStore("probe", () => {
     }
     loadingApps.value = true;
     try {
-      const next = await fetchProbeApps(prepareStart.value, windowEnd);
+      const next = await fetchProbeApps(windowStart, windowEnd);
+      if (token !== refreshToken) return;
       apps.value = next;
       // Drop selections that disappeared from the active set.
       const valid = new Set(next.map((app) => app.appKey));
@@ -76,9 +84,12 @@ export const useProbeStore = defineStore("probe", () => {
         selectedKeys.value = new Set(kept);
       }
     } catch (err) {
+      if (token !== refreshToken) return;
       error.value = err instanceof Error ? err.message : String(err);
     } finally {
-      loadingApps.value = false;
+      if (token === refreshToken) {
+        loadingApps.value = false;
+      }
     }
   }
 
@@ -114,54 +125,57 @@ export const useProbeStore = defineStore("probe", () => {
 
   async function refreshDiff() {
     if (!prepareStart.value) return;
+    const token = ++refreshToken;
+    const window = {
+      appKeys: [...selectedKeys.value],
+      prepareStart: prepareStart.value,
+      prepareEnd:
+        phase.value === "preparing" ? nowIso() : (prepareEnd.value ?? nowIso()),
+      measureStart: measureStart.value,
+      measureEnd: phase.value === "measuring" ? nowIso() : measureEnd.value,
+    };
     refreshing.value = true;
     error.value = null;
     try {
-      const endNow = nowIso();
-      const prepEnd =
-        phase.value === "preparing" ? endNow : (prepareEnd.value ?? endNow);
-      const measEnd =
-        phase.value === "measuring" ? endNow : measureEnd.value;
-
-      const [result] = await Promise.all([
-        fetchProbeDiff({
-          appKeys: [...selectedKeys.value],
-          prepareStart: prepareStart.value,
-          prepareEnd: prepEnd,
-          measureStart: measureStart.value,
-          measureEnd: measEnd,
-        }),
-        loadApps(),
-      ]);
+      const [result] = await Promise.all([fetchProbeDiff(window), loadApps()]);
+      if (token !== refreshToken) return;
       prepareIpCount.value = result.prepareIpCount;
       measureIpCount.value = result.measureIpCount;
       rows.value = result.rows;
     } catch (err) {
+      if (token !== refreshToken) return;
       error.value = err instanceof Error ? err.message : String(err);
     } finally {
-      refreshing.value = false;
+      if (token === refreshToken) {
+        refreshing.value = false;
+      }
     }
   }
 
   async function startPrepare() {
     if (!canPrepare.value) return;
+    const token = ++refreshToken;
     error.value = null;
+    prepareStart.value = null;
+    prepareEnd.value = null;
+    measureStart.value = null;
+    measureEnd.value = null;
+    prepareIpCount.value = 0;
+    measureIpCount.value = 0;
+    rows.value = [];
+    apps.value = [];
+    selectedKeys.value = new Set();
+    phase.value = "preparing";
     try {
       await ensureMonitoringRunning();
+      if (token !== refreshToken) return;
       prepareStart.value = nowIso();
-      prepareEnd.value = null;
-      measureStart.value = null;
-      measureEnd.value = null;
-      prepareIpCount.value = 0;
-      measureIpCount.value = 0;
-      rows.value = [];
-      apps.value = [];
-      selectedKeys.value = new Set();
-      phase.value = "preparing";
       await refreshDiff();
     } catch (err) {
+      if (token !== refreshToken) return;
       error.value = err instanceof Error ? err.message : String(err);
       phase.value = "idle";
+      prepareStart.value = null;
     }
   }
 
@@ -170,6 +184,7 @@ export const useProbeStore = defineStore("probe", () => {
     prepareEnd.value = nowIso();
     measureStart.value = prepareEnd.value;
     measureEnd.value = null;
+    measureIpCount.value = 0;
     phase.value = "measuring";
     await refreshDiff();
   }
@@ -182,6 +197,7 @@ export const useProbeStore = defineStore("probe", () => {
   }
 
   function reset() {
+    refreshToken++;
     phase.value = "idle";
     prepareStart.value = null;
     prepareEnd.value = null;
@@ -211,6 +227,7 @@ export const useProbeStore = defineStore("probe", () => {
     error,
     appFilter,
     selectedCount,
+    newIpCount,
     filteredApps,
     canPrepare,
     canMeasure,

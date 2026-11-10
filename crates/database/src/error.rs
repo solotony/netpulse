@@ -8,6 +8,8 @@ pub enum DatabaseError {
     Sqlx(sqlx::Error),
     Migrate(sqlx::migrate::MigrateError),
     Io(std::io::Error),
+    /// Caller-facing validation or not-found message.
+    Message(String),
 }
 
 impl fmt::Display for DatabaseError {
@@ -16,6 +18,7 @@ impl fmt::Display for DatabaseError {
             Self::Sqlx(err) => write!(f, "database error: {err}"),
             Self::Migrate(err) => write!(f, "migration error: {err}"),
             Self::Io(err) => write!(f, "io error: {err}"),
+            Self::Message(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -26,6 +29,7 @@ impl std::error::Error for DatabaseError {
             Self::Sqlx(err) => Some(err),
             Self::Migrate(err) => Some(err),
             Self::Io(err) => Some(err),
+            Self::Message(_) => None,
         }
     }
 }

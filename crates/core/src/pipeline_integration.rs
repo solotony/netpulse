@@ -8,9 +8,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
 use collector_api::NetworkCollector;
-use common::{
-    ConnectionEvent, ConnectionEventType, Direction, IpAddress, Protocol,
-};
+use common::{ConnectionEvent, ConnectionEventType, Direction, IpAddress, Protocol};
 use database::{
     query_connection_history, ConnectionHistoryFilter, ConnectionHistoryQuery, Database,
     ExportFormat, ExportOptions,
@@ -86,6 +84,7 @@ fn sample_events() -> Vec<ConnectionEvent> {
         direction: Direction::Outbound,
         bytes_sent: Some(128),
         bytes_received: Some(4096),
+        remote_hostname: None,
     };
 
     vec![
@@ -189,7 +188,10 @@ async fn mock_collector_through_export_pipeline() {
         .expect("txt export");
     assert_eq!(summary.rows_written, 1);
     let export_text = String::from_utf8(export_buf).expect("utf8");
-    assert!(export_text.contains("curl"), "export missing process: {export_text}");
+    assert!(
+        export_text.contains("curl"),
+        "export missing process: {export_text}"
+    );
     assert!(
         export_text.contains("172.67.10.20"),
         "export missing remote IP: {export_text}"

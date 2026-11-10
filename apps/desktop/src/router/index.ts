@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 import ConnectionsPage from "../pages/ConnectionsPage.vue";
 import DomainsPage from "../pages/DomainsPage.vue";
+import GroupsPage from "../pages/GroupsPage.vue";
 import IpAddressesPage from "../pages/IpAddressesPage.vue";
 import NetworksPage from "../pages/NetworksPage.vue";
 import ProbePage from "../pages/ProbePage.vue";
@@ -41,6 +42,12 @@ export const router = createRouter({
       name: "networks",
       component: NetworksPage,
       meta: { title: "Networks" },
+    },
+    {
+      path: "/groups",
+      name: "groups",
+      component: GroupsPage,
+      meta: { title: "Groups" },
     },
     {
       path: "/statistics",

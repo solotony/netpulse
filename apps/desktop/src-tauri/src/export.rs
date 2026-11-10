@@ -4,9 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use chrono::Utc;
-use database::{
-    ConnectionHistoryFilter, ExportFormat, ExportOptions, EXPORT_CHUNK_SIZE,
-};
+use database::{ConnectionHistoryFilter, ExportFormat, ExportOptions, EXPORT_CHUNK_SIZE};
 use serde::{Deserialize, Serialize};
 
 use crate::history::{parse_rfc3339, HistoryFilterDto};
@@ -95,9 +93,7 @@ pub async fn export_connection_history(
     use tauri::Manager;
 
     let filter = to_filter(request.filter)?;
-    let selected_ids = request
-        .selected_ids
-        .filter(|ids| !ids.is_empty());
+    let selected_ids = request.selected_ids.filter(|ids| !ids.is_empty());
     let format = ExportFormat::from(request.format.clone());
     let suggested = default_file_name(&request.format);
 
@@ -152,4 +148,3 @@ pub async fn export_connection_history(
         cancelled: false,
     })
 }
-

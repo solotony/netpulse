@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use database::{
     diff_probe as query_diff_probe, list_probe_apps, ProbeAppRow, ProbeDiffQuery, ProbeDiffRow,
+    ProbeIpOrigin,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +32,24 @@ impl From<ProbeAppRow> for ProbeAppDto {
     }
 }
 
-/// One remote IP that appeared in measure but not prepare.
+/// `baseline` IPs were seen while preparing; `new` IPs appeared only while measuring.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeIpOriginDto {
+    Baseline,
+    New,
+}
+
+impl From<ProbeIpOrigin> for ProbeIpOriginDto {
+    fn from(origin: ProbeIpOrigin) -> Self {
+        match origin {
+            ProbeIpOrigin::Baseline => Self::Baseline,
+            ProbeIpOrigin::New => Self::New,
+        }
+    }
+}
+
+/// One remote IP from the prepare window, or a measure-only IP.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ProbeDiffRowDto {
@@ -39,7 +57,8 @@ pub struct ProbeDiffRowDto {
     pub domains: Option<String>,
     pub ports: Option<String>,
     pub process_names: Option<String>,
-    pub first_seen_in_measure: String,
+    pub first_seen: String,
+    pub origin: ProbeIpOriginDto,
 }
 
 impl From<ProbeDiffRow> for ProbeDiffRowDto {
@@ -49,7 +68,8 @@ impl From<ProbeDiffRow> for ProbeDiffRowDto {
             domains: row.domains,
             ports: row.ports,
             process_names: row.process_names,
-            first_seen_in_measure: row.first_seen_in_measure.to_rfc3339(),
+            first_seen: row.first_seen.to_rfc3339(),
+            origin: ProbeIpOriginDto::from(row.origin),
         }
     }
 }
@@ -83,8 +103,7 @@ pub struct ProbeDiffRequestDto {
 }
 
 fn require_rfc3339(label: &str, value: &str) -> Result<DateTime<Utc>, String> {
-    parse_rfc3339(Some(value))?
-        .ok_or_else(|| format!("{label} is required"))
+    parse_rfc3339(Some(value))?.ok_or_else(|| format!("{label} is required"))
 }
 
 /// Lists applications with network activity inside the given probe window.
@@ -105,7 +124,7 @@ pub async fn list_probe_applications(
     Ok(rows.into_iter().map(ProbeAppDto::from).collect())
 }
 
-/// Returns remote IPs seen in the measure window that were absent from prepare.
+/// Returns baseline remote IPs, and measure-only IPs once a measure window is set.
 ///
 /// Empty `appKeys` means every application.
 #[tauri::command]

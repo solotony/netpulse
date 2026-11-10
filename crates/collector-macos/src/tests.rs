@@ -23,6 +23,7 @@ fn tcp(pid: u32, local_port: u16, remote_port: u16) -> SocketObservation {
         remote_ip: IpAddress::parse("192.0.2.10").unwrap(),
         remote_port,
         direction: Direction::Outbound,
+        remote_hostname: None,
     }
 }
 
@@ -35,6 +36,7 @@ fn udp(pid: u32, local_port: u16, remote_port: u16) -> SocketObservation {
         remote_ip: IpAddress::parse("192.0.2.53").unwrap(),
         remote_port,
         direction: Direction::Outbound,
+        remote_hostname: None,
     }
 }
 
@@ -119,7 +121,9 @@ fn udp_reobserved_before_idle_keeps_flow_open() {
     let sock = udp(50, 53000, 53);
 
     assert_eq!(
-        engine.apply(std::slice::from_ref(&sock), ts(0), &processes).len(),
+        engine
+            .apply(std::slice::from_ref(&sock), ts(0), &processes)
+            .len(),
         1
     );
     // Absent briefly…
@@ -181,21 +185,29 @@ fn capabilities_match_what_the_poller_sets() {
     assert!(caps.process_identification);
     assert!(caps.incoming_connection_detection);
 
-    let collector =
-        MacOsCollector::with_sources(FixtureSnapshotSource::new(Vec::new()), FakeProcessSource::new());
+    let collector = MacOsCollector::with_sources(
+        FixtureSnapshotSource::new(Vec::new()),
+        FakeProcessSource::new(),
+    );
     assert_eq!(collector.platform(), collector_api::Platform::MacOs);
     assert_eq!(collector.capabilities(), caps);
-    assert_eq!(collector.capabilities(), CollectorCapabilities {
-        new_connection_detection: true,
-        existing_connection_enumeration: true,
-        connection_termination_detection: true,
-        tcp: true,
-        udp: true,
-        traffic_byte_counters: false,
-        process_identification: true,
-        incoming_connection_detection: true,
-    });
-    assert_eq!(collector.poll_interval().as_millis() as u64, POLL_INTERVAL_MS);
+    assert_eq!(
+        collector.capabilities(),
+        CollectorCapabilities {
+            new_connection_detection: true,
+            existing_connection_enumeration: true,
+            connection_termination_detection: true,
+            tcp: true,
+            udp: true,
+            traffic_byte_counters: false,
+            process_identification: true,
+            incoming_connection_detection: true,
+        }
+    );
+    assert_eq!(
+        collector.poll_interval().as_millis() as u64,
+        POLL_INTERVAL_MS
+    );
     assert_eq!(collector.udp_idle_timeout().as_secs(), UDP_IDLE_CLOSE_SECS);
     assert_eq!(
         DiffEngine::default().udp_idle(),
@@ -232,6 +244,95 @@ async fn fixture_collector_start_stop_and_emits_new_tcp() {
 
     collector.stop().await.expect("stop");
     assert!(!collector.is_running());
+}
+
+#[test]
+fn icmp_closes_when_the_socket_disappears() {
+    let mut engine = DiffEngine::default();
+    let processes = processes_with(7);
+    let sock = SocketObservation {
+        pid: 7,
+        protocol: Protocol::Icmp,
+        local_ip: IpAddress::parse("192.168.1.10").unwrap(),
+        local_port: 0,
+        remote_ip: IpAddress::parse("172.64.155.209").unwrap(),
+        remote_port: 0,
+        direction: Direction::Outbound,
+        remote_hostname: Some("chatgpt.com".into()),
+    };
+
+    let opened = engine.apply(&[sock.clone()], ts(0), &processes);
+    assert_eq!(opened.len(), 1);
+    assert_eq!(opened[0].protocol, Protocol::Icmp);
+    assert_eq!(opened[0].remote_hostname.as_deref(), Some("chatgpt.com"));
+
+    let still = engine.apply(&[sock], ts(1), &processes);
+    assert!(still.is_empty());
+
+    let closed = engine.apply(&[], ts(2), &processes);
+    assert_eq!(closed.len(), 1);
+    assert_eq!(closed[0].event_type, ConnectionEventType::ConnectionClosed);
+    assert_eq!(closed[0].protocol, Protocol::Icmp);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn live_ping_socket_records_destination() {
+    use std::net::IpAddr;
+    use std::process::{Child, Command, Stdio};
+    use std::thread;
+    use std::time::Duration;
+
+    use crate::snapshot::SocketSnapshotSource;
+    use crate::LibprocSnapshotSource;
+
+    struct KillOnDrop(Child);
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn spawn_ping(target: &str) -> KillOnDrop {
+        let child = Command::new("/sbin/ping")
+            .args(["-c", "30", "-i", "0.2", target])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn ping");
+        KillOnDrop(child)
+    }
+
+    fn wait_for_ping(child: &KillOnDrop) -> SocketObservation {
+        let pid = child.0.id();
+        for _ in 0..30 {
+            let snap = LibprocSnapshotSource.snapshot().expect("libproc snapshot");
+            if let Some(obs) = snap.into_iter().find(|obs| obs.pid == pid) {
+                return obs;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+        panic!("ping pid {pid} did not appear in a libproc snapshot");
+    }
+
+    let numeric = spawn_ping("127.0.0.1");
+    let numeric_obs = wait_for_ping(&numeric);
+    assert_eq!(numeric_obs.protocol, Protocol::Icmp);
+    assert_eq!(
+        numeric_obs.remote_ip.as_ip_addr(),
+        &IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    );
+    assert!(numeric_obs.remote_hostname.is_none());
+    assert_eq!(numeric_obs.direction, Direction::Outbound);
+    drop(numeric);
+
+    let named = spawn_ping("localhost");
+    let named_obs = wait_for_ping(&named);
+    assert_eq!(named_obs.protocol, Protocol::Icmp);
+    assert!(named_obs.remote_ip.as_ip_addr().is_loopback());
+    assert_eq!(named_obs.remote_hostname.as_deref(), Some("localhost"));
+    drop(named);
 }
 
 #[test]

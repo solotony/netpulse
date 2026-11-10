@@ -54,6 +54,8 @@ struct EnrichmentRequest {
     ip: IpAddr,
     /// Optional completion signal for tests that need to await persistence.
     done: Option<oneshot::Sender<()>>,
+    /// When true, skip construction/settings gates (manual entry path).
+    force: bool,
 }
 
 impl EnrichmentHandle {
@@ -67,7 +69,11 @@ impl EnrichmentHandle {
             return false;
         }
         self.tx
-            .try_send(EnrichmentRequest { ip, done: None })
+            .try_send(EnrichmentRequest {
+                ip,
+                done: None,
+                force: false,
+            })
             .is_ok()
     }
 
@@ -82,6 +88,29 @@ impl EnrichmentHandle {
             .send(EnrichmentRequest {
                 ip,
                 done: Some(done_tx),
+                force: false,
+            })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        let _ = done_rx.await;
+        true
+    }
+
+    /// Forces enrichment even when background IP enrichment settings are off.
+    ///
+    /// Used by manual domain/IP entry so registration subnets are resolved
+    /// before the command returns.
+    pub async fn enqueue_and_wait_forced(&self, ip: IpAddr) -> bool {
+        let (done_tx, done_rx) = oneshot::channel();
+        if self
+            .tx
+            .send(EnrichmentRequest {
+                ip,
+                done: Some(done_tx),
+                force: true,
             })
             .await
             .is_err()
@@ -147,7 +176,7 @@ async fn worker_loop<C>(
     let mut in_flight: HashSet<IpAddr> = HashSet::new();
 
     while let Some(request) = rx.recv().await {
-        let EnrichmentRequest { ip, done } = request;
+        let EnrichmentRequest { ip, done, force } = request;
 
         if in_flight.contains(&ip) {
             signal_done(done);
@@ -165,22 +194,24 @@ async fn worker_loop<C>(
             continue;
         }
 
-        if !config.enabled {
-            signal_done(done);
-            continue;
-        }
-
-        let enabled = match get_bool_setting(db.pool(), SETTING_IP_ENRICHMENT, true).await {
-            Ok(v) => v,
-            Err(err) => {
-                warn!(error = %err, "failed to read ip_enrichment setting");
+        if !force {
+            if !config.enabled {
                 signal_done(done);
                 continue;
             }
-        };
-        if !enabled {
-            signal_done(done);
-            continue;
+
+            let enabled = match get_bool_setting(db.pool(), SETTING_IP_ENRICHMENT, true).await {
+                Ok(v) => v,
+                Err(err) => {
+                    warn!(error = %err, "failed to read ip_enrichment setting");
+                    signal_done(done);
+                    continue;
+                }
+            };
+            if !enabled {
+                signal_done(done);
+                continue;
+            }
         }
 
         let ttl_secs = match get_i64_setting(db.pool(), SETTING_CACHE_TTL_SECONDS, 86400).await {

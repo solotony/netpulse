@@ -36,6 +36,10 @@ watch(
   () => syncPolling(),
 );
 
+onMounted(() => {
+  syncPolling();
+});
+
 function phaseLabel(phase: string): string {
   switch (phase) {
     case "preparing":
@@ -167,7 +171,7 @@ async function onCopy(value: string) {
           </div>
           <div class="stat">
             <div class="stat-label">New IPs</div>
-            <div class="stat-value accent">{{ store.rows.length }}</div>
+            <div class="stat-value accent">{{ store.newIpCount }}</div>
           </div>
         </div>
 
@@ -176,6 +180,9 @@ async function onCopy(value: string) {
           Press <strong>Prepare</strong> for a baseline, then <strong>Measure</strong> during the
           action you care about. Optionally select applications from the left list to narrow the
           result; with nothing selected, every app is included.
+        </p>
+        <p v-else-if="store.phase === 'measuring' || store.phase === 'done'" class="hint">
+          Gray addresses were collected during prepare. Bold addresses appeared during measure.
         </p>
 
         <div class="table-wrap">
@@ -201,7 +208,14 @@ async function onCopy(value: string) {
                   }}
                 </td>
               </tr>
-              <tr v-for="row in store.rows" :key="row.remoteIp">
+              <tr
+                v-for="row in store.rows"
+                :key="row.remoteIp"
+                :class="{
+                  'is-baseline': store.phase !== 'preparing' && row.origin === 'baseline',
+                  'is-new': row.origin === 'new',
+                }"
+              >
                 <td class="mono clickable" @click="onCopy(row.remoteIp)">{{ row.remoteIp }}</td>
                 <td
                   class="clickable"
@@ -211,7 +225,7 @@ async function onCopy(value: string) {
                 </td>
                 <td class="mono">{{ row.ports || "—" }}</td>
                 <td>{{ row.processNames || "—" }}</td>
-                <td class="mono">{{ row.firstSeenInMeasure }}</td>
+                <td class="mono">{{ row.firstSeen }}</td>
               </tr>
             </tbody>
           </table>
@@ -428,6 +442,15 @@ th {
   padding: 16px;
   color: var(--text-muted);
   text-align: center;
+}
+
+tbody tr.is-baseline td {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+tbody tr.is-new td {
+  font-weight: 700;
 }
 
 @media (max-width: 960px) {

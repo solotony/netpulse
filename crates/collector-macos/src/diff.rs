@@ -66,7 +66,12 @@ impl DiffEngine {
                 tracked.last_seen = now;
                 tracked.observation = obs.clone();
             } else {
-                events.push(event_from(obs, ConnectionEventType::NewConnection, now, processes));
+                events.push(event_from(
+                    obs,
+                    ConnectionEventType::NewConnection,
+                    now,
+                    processes,
+                ));
                 self.active.insert(
                     key,
                     TrackedFlow {
@@ -135,5 +140,6 @@ fn event_from(
         // libproc polling cannot supply byte counters.
         bytes_sent: None,
         bytes_received: None,
+        remote_hostname: obs.remote_hostname.clone(),
     }
 }

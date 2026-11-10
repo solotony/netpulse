@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 import { computed, reactive, ref } from "vue";
-import { fetchConnectionsWithOptionalSeed } from "../services/connections";
+import { fetchConnections } from "../services/connections";
 import {
   mapConnectionRow,
   type ConnectionSortBy,
@@ -55,7 +55,7 @@ export const useConnectionsStore = defineStore("connections", () => {
     loading.value = true;
     error.value = null;
     try {
-      page.value = await fetchConnectionsWithOptionalSeed({
+      page.value = await fetchConnections({
         page: pageNumber.value,
         pageSize: pageSize.value,
         sortBy: sortBy.value,

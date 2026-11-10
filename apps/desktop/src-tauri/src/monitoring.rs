@@ -9,10 +9,11 @@ use async_trait::async_trait;
 use collector_api::{CollectorCapabilities, CollectorError, NetworkCollector, Platform};
 use common::ConnectionEvent;
 use database::{list_distinct_remote_ips, Database};
-use dns_resolver::{DnsConfig, DnsError, DnsHandle, DnsWorker, HickoryPtrResolver, PtrResolver};
-use ip_enrichment::{
-    EnrichmentConfig, EnrichmentHandle, EnrichmentWorker, ReqwestHttpClient,
+use dns_resolver::{
+    DnsConfig, DnsError, DnsHandle, DnsWorker, ForwardResolver, HickoryForwardResolver,
+    HickoryPtrResolver, PtrResolver,
 };
+use ip_enrichment::{EnrichmentConfig, EnrichmentHandle, EnrichmentWorker, ReqwestHttpClient};
 use monitor_core::{
     EventPipeline, MockCollector, MonitoringController, MonitoringState, MonitoringStatus,
     RemoteIpObserver,
@@ -138,6 +139,16 @@ impl PtrResolver for DisabledPtrResolver {
     }
 }
 
+/// No-op forward resolver used when the system resolver cannot be created.
+struct DisabledForwardResolver;
+
+#[async_trait]
+impl ForwardResolver for DisabledForwardResolver {
+    async fn lookup_addresses(&self, _name: &str) -> Result<Vec<IpAddr>, DnsError> {
+        Ok(Vec::new())
+    }
+}
+
 /// Shared app monitoring session.
 pub struct MonitoringSession {
     db: Database,
@@ -145,6 +156,7 @@ pub struct MonitoringSession {
     backend: Mutex<Option<CollectorBackend>>,
     enrichment: EnrichmentHandle,
     dns: DnsHandle,
+    forward_resolver: Arc<dyn ForwardResolver>,
     /// Keep workers alive for the session lifetime.
     _enrichment_worker: EnrichmentWorker,
     _dns_worker: DnsWorker,
@@ -162,7 +174,7 @@ impl MonitoringSession {
         );
         let dns_config = DnsConfig::default();
         let dns_worker = match HickoryPtrResolver::new(dns_config.timeout) {
-            Ok(ptr) => DnsWorker::spawn(db.clone(), Arc::new(ptr), dns_config),
+            Ok(ptr) => DnsWorker::spawn(db.clone(), Arc::new(ptr), dns_config.clone()),
             Err(err) => {
                 warn!(error = %err, "PTR resolver unavailable; reverse DNS disabled");
                 DnsWorker::spawn(
@@ -170,11 +182,19 @@ impl MonitoringSession {
                     Arc::new(DisabledPtrResolver),
                     DnsConfig {
                         enabled: false,
-                        ..dns_config
+                        ..dns_config.clone()
                     },
                 )
             }
         };
+        let forward_resolver: Arc<dyn ForwardResolver> =
+            match HickoryForwardResolver::new(dns_config.timeout) {
+                Ok(fwd) => Arc::new(fwd),
+                Err(err) => {
+                    warn!(error = %err, "forward DNS resolver unavailable");
+                    Arc::new(DisabledForwardResolver)
+                }
+            };
         let enrichment = enrichment_worker.handle();
         let dns = dns_worker.handle();
         Self {
@@ -183,6 +203,7 @@ impl MonitoringSession {
             backend: Mutex::new(None),
             enrichment,
             dns,
+            forward_resolver,
             _enrichment_worker: enrichment_worker,
             _dns_worker: dns_worker,
         }
@@ -190,6 +211,14 @@ impl MonitoringSession {
 
     pub fn database(&self) -> &Database {
         &self.db
+    }
+
+    pub fn enrichment(&self) -> &EnrichmentHandle {
+        &self.enrichment
+    }
+
+    pub fn forward_resolver(&self) -> &dyn ForwardResolver {
+        self.forward_resolver.as_ref()
     }
 
     fn pipeline_with_enrichment(&self, collector_id: &str) -> EventPipeline {
@@ -230,10 +259,7 @@ impl MonitoringSession {
         let mut guard = self.controller.lock().await;
         if let Some(controller) = guard.as_ref() {
             let state = controller.status().await.state;
-            if matches!(
-                state,
-                MonitoringState::Running | MonitoringState::Paused
-            ) {
+            if matches!(state, MonitoringState::Running | MonitoringState::Paused) {
                 return Err(format!("cannot start while monitoring is {state:?}"));
             }
         }
@@ -241,10 +267,7 @@ impl MonitoringSession {
         let (collector, collector_id) = build_collector(backend)?;
         let pipeline = self.pipeline_with_enrichment(collector_id);
         let mut controller = MonitoringController::new(pipeline, collector);
-        controller
-            .start()
-            .await
-            .map_err(|err| err.to_string())?;
+        controller.start().await.map_err(|err| err.to_string())?;
 
         // Enrich already-stored remotes (and newly opened ones via the observer).
         self.enqueue_known_remote_ips().await;

@@ -171,6 +171,20 @@ describe("normalizeEntityListQuery", () => {
       query: { page: 1, pageSize: 50 },
     });
   });
+
+  it("passes networks group filter through invoke args", () => {
+    expect(
+      toEntityInvokeArgs(normalizeEntityListQuery({ groupFilter: "ungrouped" })),
+    ).toEqual({
+      query: { page: 1, pageSize: 50, groupFilter: "ungrouped" },
+    });
+    expect(toEntityInvokeArgs(normalizeEntityListQuery({ groupFilter: 7 }))).toEqual({
+      query: { page: 1, pageSize: 50, groupFilter: "7" },
+    });
+    expect(toEntityInvokeArgs(normalizeEntityListQuery({ groupFilter: "all" }))).toEqual({
+      query: { page: 1, pageSize: 50 },
+    });
+  });
 });
 
 describe("normalizeStatsQuery", () => {
@@ -236,6 +250,19 @@ describe("mapConnectionRow", () => {
       status: "closed",
     });
     expect(mapped.cells.local).toBe("192.168.1.10:54321");
+  });
+
+  it("omits port 0 on ICMP endpoints", () => {
+    const mapped = mapConnectionRow({
+      ...sampleRow,
+      protocol: "icmp",
+      localPort: 0,
+      remotePort: 0,
+      remoteIp: "172.64.155.209",
+    });
+    expect(mapped.protocol).toBe("ICMP");
+    expect(mapped.localAddress).toBe("192.168.1.10");
+    expect(mapped.remoteAddress).toBe("172.64.155.209");
   });
 
   it("uses a placeholder process name when missing", () => {

@@ -2,6 +2,7 @@
 
 mod export;
 mod history;
+mod manual;
 mod mock_connections;
 mod monitoring;
 mod probe;
@@ -15,11 +16,13 @@ use export::export_connection_history;
 use history::{
     list_domains, list_ip_addresses, list_networks, list_processes, query_connection_history,
 };
-use probe::{diff_probe, list_probe_applications};
-use mock_connections::{
-    seed_mock_and_list_connections, ConnectionsPage, DEFAULT_PAGE_SIZE,
+use manual::{
+    add_manual_entry, create_group_cmd, delete_group_cmd, list_group_networks, list_groups,
+    rename_group_cmd, set_network_group_cmd,
 };
+use mock_connections::{seed_mock_and_list_connections, ConnectionsPage, DEFAULT_PAGE_SIZE};
 use monitoring::{CollectorBackend, MonitoringSession, MonitoringStatusDto};
+use probe::{diff_probe, list_probe_applications};
 use settings::{AppSettings, DatabaseInfoDto};
 use stats::query_statistics;
 use tauri::image::Image;
@@ -170,10 +173,7 @@ async fn set_country_info(app: tauri::AppHandle, enabled: bool) -> Result<AppSet
 }
 
 #[tauri::command]
-async fn set_cache_ttl_seconds(
-    app: tauri::AppHandle,
-    seconds: i64,
-) -> Result<AppSettings, String> {
+async fn set_cache_ttl_seconds(app: tauri::AppHandle, seconds: i64) -> Result<AppSettings, String> {
     let session = app.state::<Arc<MonitoringSession>>();
     settings::set_cache_ttl_seconds(session.database(), seconds).await
 }
@@ -340,9 +340,8 @@ pub fn run() {
                 tracing::warn!(error = %err, "history retention on startup failed");
             }
             // Enrichment workers call tokio::spawn; must construct inside the runtime.
-            let session = tauri::async_runtime::block_on(async {
-                Arc::new(MonitoringSession::new(db))
-            });
+            let session =
+                tauri::async_runtime::block_on(async { Arc::new(MonitoringSession::new(db)) });
 
             // Sync OS autostart with the persisted setting.
             let autolaunch = handle.autolaunch();
@@ -440,6 +439,13 @@ pub fn run() {
             list_ip_addresses,
             list_domains,
             list_networks,
+            add_manual_entry,
+            list_groups,
+            list_group_networks,
+            create_group_cmd,
+            rename_group_cmd,
+            delete_group_cmd,
+            set_network_group_cmd,
             list_probe_applications,
             diff_probe,
             query_statistics,

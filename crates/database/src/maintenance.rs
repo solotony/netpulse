@@ -25,12 +25,23 @@ pub struct DatabaseInfo {
     pub connection_count: i64,
 }
 
-/// Deletes all connection history rows (events cascade via FK).
+/// Deletes connection history and the process rows that existed only to explain it.
 ///
-/// Enrichment tables (`ip_addresses`, `domains`, `networks`, …) are left intact.
+/// `connection_events` cascade from `connections`. Enrichment tables
+/// (`ip_addresses`, `domains`, `networks`, and their links) are left intact, so
+/// Domains and Networks stay. The IP Addresses list is built from connections
+/// and is therefore empty after this call.
 pub async fn clear_connection_history(pool: &SqlitePool) -> Result<u64, DatabaseError> {
-    let result = sqlx::query("DELETE FROM connections").execute(pool).await?;
-    Ok(result.rows_affected())
+    let mut tx = pool.begin().await?;
+    let deleted = sqlx::query("DELETE FROM connections")
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    sqlx::query("DELETE FROM processes")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(deleted)
 }
 
 /// Deletes connections whose `started_at` is strictly older than `cutoff`.
@@ -98,9 +109,14 @@ pub async fn database_info(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{NewConnection, NewProcess};
+    use crate::entities::{
+        list_domains, list_ip_addresses, list_networks_page, list_processes, EntityListQuery,
+    };
+    use crate::models::{NewConnection, NewNetwork, NewProcess};
     use crate::settings::{set_bool_setting, set_i64_setting};
-    use crate::writes::{insert_connection, insert_process};
+    use crate::writes::{
+        insert_connection, insert_process, store_winning_ip_network, upsert_domain,
+    };
     use crate::Database;
     use chrono::TimeZone;
 
@@ -151,6 +167,69 @@ mod tests {
 
         let (_, _, count) = connection_history_bounds(db.pool()).await.expect("bounds");
         assert_eq!(count, 0);
+        let processes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM processes")
+            .fetch_one(db.pool())
+            .await
+            .expect("count processes");
+        assert_eq!(processes, 0, "process rows have no meaning without history");
+    }
+
+    #[tokio::test]
+    async fn clear_history_keeps_domains_and_networks_and_enrichment_ips() {
+        let db = Database::open_in_memory().await.expect("db");
+        let now = Utc.with_ymd_and_hms(2026, 1, 15, 12, 0, 0).unwrap();
+        seed_connection(&db, now).await;
+        upsert_domain(db.pool(), "example.com", now)
+            .await
+            .expect("domain");
+        store_winning_ip_network(
+            db.pool(),
+            "1.1.1.1",
+            &NewNetwork {
+                cidr: "1.1.1.0/24".into(),
+                net_range: None,
+                net_name: Some("APNIC-LABS".into()),
+                organization: Some("APNIC".into()),
+                asn: Some(13335),
+                country: Some("AU".into()),
+                source: Some("rdap".into()),
+                updated_at: now,
+            },
+            now,
+        )
+        .await
+        .expect("network");
+
+        clear_connection_history(db.pool()).await.expect("clear");
+
+        let query = EntityListQuery::default();
+        let processes = list_processes(db.pool(), &query).await.expect("processes");
+        let ips = list_ip_addresses(db.pool(), &query).await.expect("ips");
+        let domains = list_domains(db.pool(), &query).await.expect("domains");
+        let networks = list_networks_page(db.pool(), &query)
+            .await
+            .expect("networks");
+
+        assert_eq!(processes.total, 0);
+        assert_eq!(
+            ips.total, 1,
+            "enrichment IPs remain visible after clearing connection history"
+        );
+        assert_eq!(ips.rows[0].ip, "1.1.1.1");
+        assert_eq!(ips.rows[0].connection_count, 0);
+        assert_eq!(domains.total, 1);
+        assert_eq!(domains.rows[0].domain, "example.com");
+        assert_eq!(networks.total, 1);
+        assert_eq!(networks.rows[0].cidr, "1.1.1.0/24");
+
+        let ip_cache: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ip_addresses")
+            .fetch_one(db.pool())
+            .await
+            .expect("count ip cache");
+        assert_eq!(
+            ip_cache, 1,
+            "enrichment cache stays so domain and network links remain"
+        );
     }
 
     #[tokio::test]

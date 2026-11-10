@@ -10,6 +10,7 @@ const navItems = [
   { to: "/ip-addresses", label: "IP Addresses" },
   { to: "/domains", label: "Domains" },
   { to: "/networks", label: "Networks" },
+  { to: "/groups", label: "Groups" },
   { to: "/statistics", label: "Statistics" },
   { to: "/probe", label: "Probe" },
   { to: "/settings", label: "Settings" },

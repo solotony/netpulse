@@ -1,12 +1,15 @@
 //! macOS libproc socket enumeration (`PROC_PIDLISTFDS` / `PROC_PIDFDSOCKETINFO`).
 
+use std::collections::HashMap;
 use std::mem::MaybeUninit;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
+use std::sync::{Mutex, OnceLock};
 
 use common::{Direction, IpAddress, Protocol};
 use libc::{c_int, c_void};
 
-use crate::snapshot::{SocketObservation, SocketSnapshotSource, SnapshotError};
+use crate::ping_args::ping_destination;
+use crate::snapshot::{SnapshotError, SocketObservation, SocketSnapshotSource};
 
 const PROC_ALL_PIDS: u32 = 1;
 const PROC_PIDLISTFDS: c_int = 1;
@@ -17,8 +20,13 @@ const SOCK_STREAM: i32 = 1;
 const SOCK_DGRAM: i32 = 2;
 const AF_INET: i32 = 2;
 const AF_INET6: i32 = 30;
+const IPPROTO_ICMP: i32 = 1;
 const IPPROTO_TCP: i32 = 6;
 const IPPROTO_UDP: i32 = 17;
+const IPPROTO_ICMPV6: i32 = 58;
+
+const CTL_KERN: c_int = 1;
+const KERN_PROCARGS2: c_int = 49;
 
 const SOCKINFO_IN: i32 = 1;
 const SOCKINFO_TCP: i32 = 2;
@@ -142,6 +150,8 @@ unsafe extern "C" {
         buffer: *mut c_void,
         buffersize: c_int,
     ) -> c_int;
+
+    fn proc_name(pid: c_int, buffer: *mut c_void, buffersize: u32) -> c_int;
 }
 
 /// Snapshot source backed by libproc process / FD enumeration.
@@ -260,21 +270,27 @@ fn observation_from_socket(pid: u32, soi: &SocketInfo) -> Option<SocketObservati
         return None;
     }
 
-    let protocol = match (soi.soi_type, soi.soi_protocol, soi.soi_kind) {
-        (SOCK_STREAM, _, SOCKINFO_TCP) | (_, IPPROTO_TCP, SOCKINFO_TCP) => Protocol::Tcp,
-        (SOCK_DGRAM, _, SOCKINFO_IN) | (_, IPPROTO_UDP, SOCKINFO_IN) => Protocol::Udp,
-        (SOCK_STREAM, IPPROTO_TCP, _) => Protocol::Tcp,
-        (SOCK_DGRAM, IPPROTO_UDP, _) => Protocol::Udp,
-        _ => return None,
+    // ICMP before the datagram wildcard: macOS ping uses SOCK_DGRAM + IPPROTO_ICMP.
+    let protocol = if soi.soi_kind == SOCKINFO_IN
+        && (soi.soi_protocol == IPPROTO_ICMP || soi.soi_protocol == IPPROTO_ICMPV6)
+    {
+        Protocol::Icmp
+    } else {
+        match (soi.soi_type, soi.soi_protocol, soi.soi_kind) {
+            (SOCK_STREAM, _, SOCKINFO_TCP) | (_, IPPROTO_TCP, SOCKINFO_TCP) => Protocol::Tcp,
+            (SOCK_DGRAM, _, SOCKINFO_IN) | (_, IPPROTO_UDP, SOCKINFO_IN) => Protocol::Udp,
+            (SOCK_STREAM, IPPROTO_TCP, _) => Protocol::Tcp,
+            (SOCK_DGRAM, IPPROTO_UDP, _) => Protocol::Udp,
+            _ => return None,
+        }
     };
 
     let (ini, tcp_state) = match soi.soi_kind {
         SOCKINFO_TCP => {
             // SAFETY: soi_proto starts with tcp_sockinfo / in_sockinfo for TCP.
             let ini = unsafe { read_in_sockinfo(soi.soi_proto.as_ptr()) };
-            let state = unsafe {
-                std::ptr::read_unaligned(soi.soi_proto.as_ptr().add(80).cast::<i32>())
-            };
+            let state =
+                unsafe { std::ptr::read_unaligned(soi.soi_proto.as_ptr().add(80).cast::<i32>()) };
             (ini, Some(state))
         }
         SOCKINFO_IN => {
@@ -290,17 +306,33 @@ fn observation_from_socket(pid: u32, soi: &SocketInfo) -> Option<SocketObservati
         }
     }
 
-    let local_ip = ip_from_insi(&ini, true)?;
-    let remote_ip = ip_from_insi(&ini, false)?;
+    let mut local_ip = ip_from_insi(&ini, true)?;
+    let mut remote_ip = ip_from_insi(&ini, false)?;
     let local_port = ntohs_port(ini.insi_lport);
     let remote_port = ntohs_port(ini.insi_fport);
+    let mut remote_hostname = None;
+
+    // ping keeps an unconnected ICMP socket and sendto()s each echo. The
+    // foreign address stays 0.0.0.0; recover the target from argv.
+    if protocol == Protocol::Icmp && is_unspecified(remote_ip) && remote_port == 0 {
+        let (peer, local, hostname) = recover_icmp_peer(pid, soi.soi_family)?;
+        remote_ip = peer;
+        if !is_unspecified(local) {
+            local_ip = local;
+        }
+        remote_hostname = hostname;
+    }
 
     // Skip listeners / unconnected sockets (no peer).
     if is_unspecified(remote_ip) && remote_port == 0 {
         return None;
     }
 
-    let direction = infer_direction(local_port, remote_port);
+    let direction = if protocol == Protocol::Icmp {
+        Direction::Outbound
+    } else {
+        infer_direction(local_port, remote_port)
+    };
 
     Some(SocketObservation {
         pid,
@@ -310,6 +342,7 @@ fn observation_from_socket(pid: u32, soi: &SocketInfo) -> Option<SocketObservati
         remote_ip: IpAddress::new(remote_ip),
         remote_port,
         direction,
+        remote_hostname,
     })
 }
 
@@ -358,4 +391,226 @@ fn infer_direction(local_port: u16, remote_port: u16) -> Direction {
         (false, true) => Direction::Outbound,
         _ => Direction::Unknown,
     }
+}
+
+struct IcmpPeer {
+    host: String,
+    ip: IpAddr,
+    local_ip: IpAddr,
+    hostname: Option<String>,
+}
+
+fn icmp_cache() -> &'static Mutex<HashMap<u32, IcmpPeer>> {
+    static CACHE: OnceLock<Mutex<HashMap<u32, IcmpPeer>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Remote address for an unconnected ICMP socket owned by `ping`.
+///
+/// Returns `(remote, local, hostname)`. `hostname` is set when the argument
+/// was a name rather than a numeric address.
+fn recover_icmp_peer(pid: u32, family: i32) -> Option<(IpAddr, IpAddr, Option<String>)> {
+    match process_comm(pid).as_deref() {
+        Some(name) if !is_ping_comm(name) => {
+            if let Ok(mut cache) = icmp_cache().lock() {
+                cache.remove(&pid);
+            }
+            return None;
+        }
+        Some(_) | None => {}
+    }
+
+    if let Some(args) = read_process_args(pid) {
+        if let Some(host) = ping_destination(&args) {
+            if let Some(peer) = peer_for_host(pid, host, family) {
+                return Some(peer);
+            }
+        }
+    }
+
+    let cache = icmp_cache().lock().ok()?;
+    let peer = cache.get(&pid)?;
+    if !family_matches(peer.ip, family) {
+        return None;
+    }
+    Some((peer.ip, peer.local_ip, peer.hostname.clone()))
+}
+
+fn peer_for_host(pid: u32, host: &str, family: i32) -> Option<(IpAddr, IpAddr, Option<String>)> {
+    if let Ok(cache) = icmp_cache().lock() {
+        if let Some(peer) = cache.get(&pid) {
+            if peer.host == host && family_matches(peer.ip, family) {
+                return Some((peer.ip, peer.local_ip, peer.hostname.clone()));
+            }
+        }
+    }
+
+    let ip = resolve_host(host, family)?;
+    let local_ip = local_ip_toward(ip).unwrap_or_else(|| unspecified_like(ip));
+    let hostname = if parse_ip_token(host).is_some() {
+        None
+    } else {
+        Some(host.to_owned())
+    };
+    if let Ok(mut cache) = icmp_cache().lock() {
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(
+            pid,
+            IcmpPeer {
+                host: host.to_owned(),
+                ip,
+                local_ip,
+                hostname: hostname.clone(),
+            },
+        );
+    }
+    Some((ip, local_ip, hostname))
+}
+
+fn resolve_host(host: &str, family: i32) -> Option<IpAddr> {
+    if let Some(ip) = parse_ip_token(host) {
+        return family_matches(ip, family).then_some(ip);
+    }
+    let addrs = (host, 0u16).to_socket_addrs().ok()?;
+    addrs
+        .map(|addr| addr.ip())
+        .find(|ip| family_matches(*ip, family))
+}
+
+fn parse_ip_token(token: &str) -> Option<IpAddr> {
+    let trimmed = token.trim();
+    let bare = trimmed
+        .strip_prefix('[')
+        .and_then(|value| value.strip_suffix(']'))
+        .unwrap_or(trimmed);
+    let bare = bare.split('%').next().unwrap_or(bare);
+    bare.parse().ok()
+}
+
+fn family_matches(ip: IpAddr, family: i32) -> bool {
+    match family {
+        AF_INET => ip.is_ipv4(),
+        AF_INET6 => ip.is_ipv6(),
+        _ => false,
+    }
+}
+
+fn unspecified_like(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+    }
+}
+
+fn local_ip_toward(remote: IpAddr) -> Option<IpAddr> {
+    let bind = match remote {
+        IpAddr::V4(_) => SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)),
+        IpAddr::V6(_) => SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)),
+    };
+    let socket = std::net::UdpSocket::bind(bind).ok()?;
+    // UDP connect selects a source address and does not transmit.
+    socket.connect(SocketAddr::new(remote, 443)).ok()?;
+    socket.local_addr().ok().map(|addr| addr.ip())
+}
+
+fn is_ping_comm(name: &str) -> bool {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    base == "ping" || base == "ping6"
+}
+
+fn process_comm(pid: u32) -> Option<String> {
+    let mut buf = [0u8; 64];
+    // SAFETY: buffer is writable; proc_name writes a NUL-terminated name.
+    let written = unsafe { proc_name(pid as c_int, buf.as_mut_ptr().cast(), buf.len() as u32) };
+    if written <= 0 {
+        return None;
+    }
+    let end = buf.iter().position(|byte| *byte == 0).unwrap_or(buf.len());
+    let name = std::str::from_utf8(&buf[..end]).ok()?.trim();
+    if name.is_empty() {
+        None
+    } else {
+        Some(name.to_owned())
+    }
+}
+
+fn read_process_args(pid: u32) -> Option<Vec<String>> {
+    let mut mib = [CTL_KERN, KERN_PROCARGS2, pid as c_int];
+    let mut size: libc::size_t = 0;
+    // SAFETY: null oldp asks for the buffer size only.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || size < 4 {
+        return None;
+    }
+    size = size.saturating_add(256);
+    let mut buf = vec![0u8; size];
+    let mut actual = buf.len();
+    // SAFETY: buf is writable and actual tracks its length in bytes.
+    let rc = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr().cast(),
+            &mut actual,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc != 0 || actual < 4 || actual > buf.len() {
+        return None;
+    }
+    buf.truncate(actual);
+    let args = argv_from_procargs2(&buf);
+    if args.is_empty() {
+        None
+    } else {
+        Some(args)
+    }
+}
+
+/// Decodes the `KERN_PROCARGS2` layout: argc, executable path, then argv strings.
+fn argv_from_procargs2(buf: &[u8]) -> Vec<String> {
+    if buf.len() < 4 {
+        return Vec::new();
+    }
+    let argc = i32::from_ne_bytes([buf[0], buf[1], buf[2], buf[3]]);
+    if argc <= 0 {
+        return Vec::new();
+    }
+    let mut index = 4usize;
+    while index < buf.len() && buf[index] != 0 {
+        index += 1;
+    }
+    while index < buf.len() && buf[index] == 0 {
+        index += 1;
+    }
+    let mut args = Vec::with_capacity(argc as usize);
+    for _ in 0..argc {
+        if index >= buf.len() {
+            break;
+        }
+        let start = index;
+        while index < buf.len() && buf[index] != 0 {
+            index += 1;
+        }
+        match std::str::from_utf8(&buf[start..index]) {
+            Ok(arg) => args.push(arg.to_owned()),
+            Err(_) => return args,
+        }
+        if index < buf.len() {
+            index += 1;
+        }
+    }
+    args
 }

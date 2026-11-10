@@ -12,7 +12,8 @@ export interface ProbeDiffRow {
   domains: string | null;
   ports: string | null;
   processNames: string | null;
-  firstSeenInMeasure: string;
+  firstSeen: string;
+  origin: "baseline" | "new";
 }
 
 export interface ProbeDiffResult {

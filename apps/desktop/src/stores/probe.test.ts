@@ -10,19 +10,30 @@ vi.mock("../services/probe", () => ({
       lastSeenAt: "2024-06-01T10:00:00Z",
     },
   ]),
-  fetchProbeDiff: vi.fn(async () => ({
-    prepareIpCount: 3,
-    measureIpCount: 4,
-    rows: [
-      {
-        remoteIp: "192.0.2.50",
-        domains: "new.example.com",
-        ports: "443",
-        processNames: "Safari",
-        firstSeenInMeasure: "2024-06-01T11:01:00Z",
-      },
-    ],
-  })),
+  fetchProbeDiff: vi.fn(async (request: { measureStart?: string | null }) => {
+    const measuring = Boolean(request.measureStart);
+    const baseline = {
+      remoteIp: "203.0.113.10",
+      domains: "old.example.com",
+      ports: "443",
+      processNames: "Safari",
+      firstSeen: "2024-06-01T10:00:00Z",
+      origin: "baseline" as const,
+    };
+    const fresh = {
+      remoteIp: "192.0.2.50",
+      domains: "new.example.com",
+      ports: "443",
+      processNames: "Safari",
+      firstSeen: "2024-06-01T11:01:00Z",
+      origin: "new" as const,
+    };
+    return {
+      prepareIpCount: 1,
+      measureIpCount: measuring ? 2 : 0,
+      rows: measuring ? [baseline, fresh] : [baseline],
+    };
+  }),
 }));
 
 vi.mock("./monitoring", () => ({
@@ -34,7 +45,7 @@ vi.mock("./monitoring", () => ({
   }),
 }));
 
-import { fetchProbeApps, fetchProbeDiff } from "../services/probe";
+import { fetchProbeApps, fetchProbeDiff, type ProbeDiffResult } from "../services/probe";
 import { useProbeStore } from "./probe";
 
 describe("probe store phases", () => {
@@ -51,6 +62,10 @@ describe("probe store phases", () => {
 
     await store.startPrepare();
     expect(store.phase).toBe("preparing");
+    expect(store.prepareIpCount).toBe(1);
+    expect(store.measureIpCount).toBe(0);
+    expect(store.rows.map((row) => row.origin)).toEqual(["baseline"]);
+    expect(store.newIpCount).toBe(0);
     expect(fetchProbeDiff).toHaveBeenCalledWith(
       expect.objectContaining({ appKeys: [] }),
     );
@@ -68,14 +83,63 @@ describe("probe store phases", () => {
     await store.startMeasure();
     expect(store.phase).toBe("measuring");
     expect(store.canStop).toBe(true);
+    expect(store.rows.map((row) => row.origin)).toEqual(["baseline", "new"]);
+    expect(store.newIpCount).toBe(1);
+    expect(store.prepareIpCount).toBe(1);
 
     await store.stopMeasure();
     expect(store.phase).toBe("done");
-    expect(store.rows).toHaveLength(1);
+    expect(store.rows).toHaveLength(2);
 
     store.reset();
     expect(store.phase).toBe("idle");
     expect(store.apps).toHaveLength(0);
     expect(store.rows).toHaveLength(0);
+    expect(store.prepareIpCount).toBe(0);
+    expect(store.measureIpCount).toBe(0);
+  });
+
+  it("clears counts when prepare starts and drops a refresh that finishes after reset", async () => {
+    const store = useProbeStore();
+    await store.startPrepare();
+    expect(store.prepareIpCount).toBe(1);
+
+    let release: (value: ProbeDiffResult | PromiseLike<ProbeDiffResult>) => void =
+      () => {};
+    vi.mocked(fetchProbeDiff).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const pending = store.refreshDiff();
+    await vi.waitFor(() => expect(fetchProbeDiff).toHaveBeenCalledTimes(2));
+
+    store.reset();
+    expect(store.prepareIpCount).toBe(0);
+    expect(store.measureIpCount).toBe(0);
+    expect(store.rows).toHaveLength(0);
+
+    release({
+      prepareIpCount: 9,
+      measureIpCount: 8,
+      rows: [
+        {
+          remoteIp: "198.51.100.9",
+          domains: null,
+          ports: null,
+          processNames: null,
+          firstSeen: "2024-06-01T10:05:00Z",
+          origin: "baseline",
+        },
+      ],
+    });
+    await pending;
+
+    expect(store.phase).toBe("idle");
+    expect(store.prepareIpCount).toBe(0);
+    expect(store.measureIpCount).toBe(0);
+    expect(store.rows).toHaveLength(0);
+    expect(store.apps).toHaveLength(0);
   });
 });

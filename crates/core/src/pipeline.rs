@@ -9,10 +9,11 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
-use common::{ConnectionEvent, ConnectionEventType, Direction, Protocol};
+use common::{normalize_domain, ConnectionEvent, ConnectionEventType, Direction, Protocol};
 use database::{
     find_open_connection, insert_connection, insert_connection_event, update_connection_exec,
-    upsert_process, ConnectionUpdate, Database, DatabaseError, NewConnection, NewProcess,
+    upsert_ip_domain, upsert_process, ConnectionUpdate, Database, DatabaseError, NewConnection,
+    NewIpDomain, NewProcess,
 };
 use tokio::sync::mpsc;
 
@@ -202,8 +203,15 @@ impl EventPipeline {
 
     /// Normalizes and persists a single event.
     pub async fn process(&self, event: ConnectionEvent) -> Result<ProcessOutcome, PipelineError> {
+        let observed_name = event.remote_hostname.clone();
+        let remote_ip = event.remote_ip.to_string();
+        let seen_at = event.timestamp;
         let normalized = NormalizedEvent::from_event(&event)?;
         let outcome = self.persist(&normalized).await?;
+        if outcome.connection_id.is_some() {
+            self.record_observed_hostname(&remote_ip, observed_name.as_deref(), seen_at)
+                .await;
+        }
         if let Some(observer) = &self.remote_ip_observer {
             if let Ok(ip) = normalized.remote_ip.parse::<IpAddr>() {
                 observer(ip);
@@ -336,6 +344,38 @@ impl EventPipeline {
             closed,
         })
     }
+
+    /// Stores the hostname a process addressed (`ping chatgpt.com`) so the
+    /// connections list can show it. Failure here does not drop the connection.
+    async fn record_observed_hostname(&self, ip: &str, raw: Option<&str>, seen_at: DateTime<Utc>) {
+        let Some(raw) = raw else {
+            return;
+        };
+        let Some(domain) = observed_domain(raw) else {
+            return;
+        };
+        let link = NewIpDomain {
+            ip: ip.to_owned(),
+            domain,
+            source: "OBSERVED".to_owned(),
+            confidence: Some(0.9),
+            seen_at,
+        };
+        if let Err(err) = upsert_ip_domain(self.db.pool(), &link).await {
+            tracing::warn!(error = %err, %ip, "failed to store observed hostname");
+        }
+    }
+}
+
+fn observed_domain(raw: &str) -> Option<String> {
+    let domain = normalize_domain(raw).ok()?;
+    if domain.contains(['/', ' ', '\\']) {
+        return None;
+    }
+    if domain.parse::<IpAddr>().is_ok() {
+        return None;
+    }
+    Some(domain)
 }
 
 #[cfg(test)]
@@ -369,6 +409,7 @@ mod tests {
             direction: Direction::Outbound,
             bytes_sent: None,
             bytes_received: None,
+            remote_hostname: None,
         }
     }
 
@@ -509,7 +550,11 @@ mod tests {
         assert!(closed.closed);
         assert_eq!(closed.connection_id, Some(first_id));
 
-        let row = db.get_connection(first_id).await.expect("get").expect("row");
+        let row = db
+            .get_connection(first_id)
+            .await
+            .expect("get")
+            .expect("row");
         assert_eq!(row.ended_at, Some(t_close));
 
         let reopened = pipeline
@@ -624,13 +669,12 @@ mod tests {
             .expect("row");
         assert!(process.executable_path.is_none());
 
-        let path: Option<String> = sqlx::query_scalar(
-            "SELECT executable_path FROM processes WHERE id = ?1",
-        )
-        .bind(outcome.process_id)
-        .fetch_one(db.pool())
-        .await
-        .expect("scalar");
+        let path: Option<String> =
+            sqlx::query_scalar("SELECT executable_path FROM processes WHERE id = ?1")
+                .bind(outcome.process_id)
+                .fetch_one(db.pool())
+                .await
+                .expect("scalar");
         assert!(path.is_none());
 
         // Empty / whitespace path must not be invented into a real path either.
@@ -677,13 +721,55 @@ mod tests {
         pipeline.run(rx).await.expect("run");
         assert_eq!(count_connections(&db).await, 1);
 
-        let open_ended: i64 = sqlx::query(
-            "SELECT COUNT(*) as c FROM connections WHERE ended_at IS NULL",
+        let open_ended: i64 =
+            sqlx::query("SELECT COUNT(*) as c FROM connections WHERE ended_at IS NULL")
+                .fetch_one(db.pool())
+                .await
+                .expect("query")
+                .get::<i64, _>("c");
+        assert_eq!(open_ended, 1);
+    }
+
+    #[tokio::test]
+    async fn observed_hostname_is_linked_to_the_remote_ip() {
+        let db = Database::open_in_memory().await.expect("open");
+        let pipeline = EventPipeline::new(db.clone());
+        let start = Utc.with_ymd_and_hms(2026, 11, 9, 5, 0, 0).unwrap();
+        let mut event = base_event(
+            ConnectionEventType::NewConnection,
+            80,
+            start,
+            Utc.with_ymd_and_hms(2026, 11, 9, 5, 0, 1).unwrap(),
+            "172.64.155.209",
+            0,
+            Some("/sbin/ping"),
+        );
+        event.protocol = Protocol::Icmp;
+        event.process_name = Some("ping".into());
+        event.remote_hostname = Some("ChatGPT.com.".into());
+
+        let outcome = pipeline.process(event).await.expect("process");
+        assert!(outcome.opened);
+
+        let domain: String = sqlx::query_scalar(
+            r#"
+            SELECT d.domain
+            FROM domains d
+            INNER JOIN ip_domains idm ON idm.domain_id = d.id
+            INNER JOIN ip_addresses ia ON ia.id = idm.ip_id
+            WHERE ia.ip = '172.64.155.209' AND idm.source = 'OBSERVED'
+            "#,
         )
         .fetch_one(db.pool())
         .await
-        .expect("query")
-        .get::<i64, _>("c");
-        assert_eq!(open_ended, 1);
+        .expect("domain");
+        assert_eq!(domain, "chatgpt.com");
+
+        let protocol: String = sqlx::query_scalar("SELECT protocol FROM connections WHERE id = ?1")
+            .bind(outcome.connection_id)
+            .fetch_one(db.pool())
+            .await
+            .expect("protocol");
+        assert_eq!(protocol, "icmp");
     }
 }

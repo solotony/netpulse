@@ -280,6 +280,7 @@ mod tests {
             direction: Direction::Outbound,
             bytes_sent: Some(128),
             bytes_received: Some(4096),
+            remote_hostname: None,
         }
     }
 
@@ -307,10 +308,7 @@ mod tests {
         let mut controller = MonitoringController::new(pipeline, collector);
 
         controller.start().await.expect("start");
-        assert_eq!(
-            controller.status().await.state,
-            MonitoringState::Running
-        );
+        assert_eq!(controller.status().await.state, MonitoringState::Running);
 
         // Wait until the delayed mock event is persisted.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
@@ -324,18 +322,23 @@ mod tests {
 
         controller.pause().await.expect("pause");
         assert_eq!(controller.status().await.state, MonitoringState::Paused);
-        assert_eq!(connection_count(&db).await, 2, "pause must not clear history");
+        assert_eq!(
+            connection_count(&db).await,
+            2,
+            "pause must not clear history"
+        );
 
         // While paused, no further processing (collector is stopped).
         tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         assert_eq!(connection_count(&db).await, 2);
 
         controller.resume().await.expect("resume");
+        assert_eq!(controller.status().await.state, MonitoringState::Running);
         assert_eq!(
-            controller.status().await.state,
-            MonitoringState::Running
+            connection_count(&db).await,
+            2,
+            "resume must not clear history"
         );
-        assert_eq!(connection_count(&db).await, 2, "resume must not clear history");
 
         controller.stop().await.expect("stop");
         assert_eq!(controller.status().await.state, MonitoringState::Stopped);
@@ -356,9 +359,8 @@ mod tests {
             .expect("seed 2");
         assert_eq!(connection_count(&db).await, 2);
 
-        let collector = MockCollector::new(Vec::new()).fail_next_start(CollectorError::Failed(
-            "injected collector failure".into(),
-        ));
+        let collector = MockCollector::new(Vec::new())
+            .fail_next_start(CollectorError::Failed("injected collector failure".into()));
         let mut controller = MonitoringController::new(pipeline, collector);
 
         let err = controller.start().await.expect_err("start must fail");
@@ -388,8 +390,7 @@ mod tests {
     async fn invalid_transitions_are_rejected() {
         let db = Database::open_in_memory().await.expect("db");
         let pipeline = EventPipeline::new(db);
-        let mut controller =
-            MonitoringController::new(pipeline, MockCollector::new(Vec::new()));
+        let mut controller = MonitoringController::new(pipeline, MockCollector::new(Vec::new()));
 
         assert!(matches!(
             controller.pause().await,

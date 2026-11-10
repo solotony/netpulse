@@ -6,12 +6,26 @@ use sqlx::{FromRow, QueryBuilder, SqlitePool};
 use crate::error::DatabaseError;
 use crate::queries::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
 
+/// Optional networks-page filter by assigned group.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum NetworkGroupFilter {
+    /// No group constraint.
+    #[default]
+    Any,
+    /// Only networks with `group_id IS NULL`.
+    Ungrouped,
+    /// Only networks belonging to this group id.
+    Group(i64),
+}
+
 /// Shared pagination + optional text search for entity tables.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntityListQuery {
     pub text: Option<String>,
     pub limit: u32,
     pub offset: u64,
+    /// Applied by [`list_networks_page`]; ignored by other entity lists.
+    pub group_filter: NetworkGroupFilter,
 }
 
 impl Default for EntityListQuery {
@@ -20,6 +34,7 @@ impl Default for EntityListQuery {
             text: None,
             limit: DEFAULT_PAGE_SIZE,
             offset: 0,
+            group_filter: NetworkGroupFilter::Any,
         }
     }
 }
@@ -128,6 +143,8 @@ pub struct NetworkListRow {
     pub asn: Option<i64>,
     pub organization: Option<String>,
     pub country: Option<String>,
+    pub group_id: Option<i64>,
+    pub group_name: Option<String>,
     pub ip_count: i64,
     pub connection_count: i64,
     pub first_seen_at: Option<DateTime<Utc>>,
@@ -230,7 +247,9 @@ pub async fn list_processes(
     })
 }
 
-/// Lists distinct remote IPs from connections with enrichment joins.
+/// Lists IP addresses from enrichment storage and connection history.
+///
+/// Includes manually added addresses that have never appeared in connections.
 pub async fn list_ip_addresses(
     pool: &SqlitePool,
     query: &EntityListQuery,
@@ -246,16 +265,22 @@ pub async fn list_ip_addresses(
 
     let mut count_qb = QueryBuilder::new(
         r#"
-        SELECT COUNT(DISTINCT c.remote_ip)
-        FROM connections c
-        LEFT JOIN ip_addresses ia ON ia.ip = c.remote_ip
+        SELECT COUNT(*)
+        FROM (
+            SELECT ia.ip AS ip
+            FROM ip_addresses ia
+            UNION
+            SELECT c.remote_ip AS ip
+            FROM connections c
+        ) ips
+        LEFT JOIN ip_addresses ia ON ia.ip = ips.ip
         LEFT JOIN ip_networks inw ON inw.ip_id = ia.id
         LEFT JOIN networks n ON n.id = inw.network_id
         WHERE 1 = 1
         "#,
     );
     if let Some(ref pattern) = pattern {
-        count_qb.push(" AND (LOWER(c.remote_ip) LIKE LOWER(");
+        count_qb.push(" AND (LOWER(ips.ip) LIKE LOWER(");
         count_qb.push_bind(pattern.clone());
         count_qb.push(") ESCAPE '\\' OR LOWER(IFNULL(n.cidr, '')) LIKE LOWER(");
         count_qb.push_bind(pattern.clone());
@@ -270,23 +295,29 @@ pub async fn list_ip_addresses(
     let mut list_qb = QueryBuilder::new(
         r#"
         SELECT
-            c.remote_ip AS ip,
-            MIN(c.started_at) AS first_seen_at,
-            MAX(COALESCE(c.ended_at, c.started_at)) AS last_seen_at,
-            COUNT(DISTINCT c.id) AS connection_count,
-            COUNT(DISTINCT c.process_id) AS process_count,
+            ips.ip AS ip,
+            COALESCE(
+                ia.first_seen_at,
+                (SELECT MIN(c.started_at) FROM connections c WHERE c.remote_ip = ips.ip)
+            ) AS first_seen_at,
+            COALESCE(
+                ia.last_seen_at,
+                (SELECT MAX(COALESCE(c.ended_at, c.started_at)) FROM connections c WHERE c.remote_ip = ips.ip)
+            ) AS last_seen_at,
+            (SELECT COUNT(DISTINCT c.id) FROM connections c WHERE c.remote_ip = ips.ip) AS connection_count,
+            (SELECT COUNT(DISTINCT c.process_id) FROM connections c WHERE c.remote_ip = ips.ip) AS process_count,
             (
                 SELECT COUNT(DISTINCT idm.domain_id)
                 FROM ip_addresses ia2
                 INNER JOIN ip_domains idm ON idm.ip_id = ia2.id
-                WHERE ia2.ip = c.remote_ip
+                WHERE ia2.ip = ips.ip
             ) AS domain_count,
             (
                 SELECT n.cidr
                 FROM ip_addresses ia3
                 INNER JOIN ip_networks inw ON inw.ip_id = ia3.id
                 INNER JOIN networks n ON n.id = inw.network_id
-                WHERE ia3.ip = c.remote_ip
+                WHERE ia3.ip = ips.ip
                 ORDER BY n.updated_at DESC, n.id ASC
                 LIMIT 1
             ) AS cidr,
@@ -295,7 +326,7 @@ pub async fn list_ip_addresses(
                 FROM ip_addresses ia3
                 INNER JOIN ip_networks inw ON inw.ip_id = ia3.id
                 INNER JOIN networks n ON n.id = inw.network_id
-                WHERE ia3.ip = c.remote_ip
+                WHERE ia3.ip = ips.ip
                 ORDER BY n.updated_at DESC, n.id ASC
                 LIMIT 1
             ) AS net_name,
@@ -304,7 +335,7 @@ pub async fn list_ip_addresses(
                 FROM ip_addresses ia3
                 INNER JOIN ip_networks inw ON inw.ip_id = ia3.id
                 INNER JOIN networks n ON n.id = inw.network_id
-                WHERE ia3.ip = c.remote_ip
+                WHERE ia3.ip = ips.ip
                 ORDER BY n.updated_at DESC, n.id ASC
                 LIMIT 1
             ) AS asn,
@@ -313,7 +344,7 @@ pub async fn list_ip_addresses(
                 FROM ip_addresses ia3
                 INNER JOIN ip_networks inw ON inw.ip_id = ia3.id
                 INNER JOIN networks n ON n.id = inw.network_id
-                WHERE ia3.ip = c.remote_ip
+                WHERE ia3.ip = ips.ip
                 ORDER BY n.updated_at DESC, n.id ASC
                 LIMIT 1
             ) AS organization,
@@ -322,23 +353,30 @@ pub async fn list_ip_addresses(
                 FROM ip_addresses ia3
                 INNER JOIN ip_networks inw ON inw.ip_id = ia3.id
                 INNER JOIN networks n ON n.id = inw.network_id
-                WHERE ia3.ip = c.remote_ip
+                WHERE ia3.ip = ips.ip
                 ORDER BY n.updated_at DESC, n.id ASC
                 LIMIT 1
             ) AS country
-        FROM connections c
+        FROM (
+            SELECT ia.ip AS ip
+            FROM ip_addresses ia
+            UNION
+            SELECT c.remote_ip AS ip
+            FROM connections c
+        ) ips
+        LEFT JOIN ip_addresses ia ON ia.ip = ips.ip
         WHERE 1 = 1
         "#,
     );
     if let Some(ref pattern) = pattern {
-        list_qb.push(" AND (LOWER(c.remote_ip) LIKE LOWER(");
+        list_qb.push(" AND (LOWER(ips.ip) LIKE LOWER(");
         list_qb.push_bind(pattern.clone());
         list_qb.push(
             r#") ESCAPE '\' OR EXISTS (
-                SELECT 1 FROM ip_addresses ia
-                INNER JOIN ip_networks inw ON inw.ip_id = ia.id
+                SELECT 1 FROM ip_addresses iaf
+                INNER JOIN ip_networks inw ON inw.ip_id = iaf.id
                 INNER JOIN networks n ON n.id = inw.network_id
-                WHERE ia.ip = c.remote_ip AND (
+                WHERE iaf.ip = ips.ip AND (
                     LOWER(IFNULL(n.cidr, '')) LIKE LOWER(
             "#,
         );
@@ -352,7 +390,6 @@ pub async fn list_ip_addresses(
     }
     list_qb.push(
         r#"
-        GROUP BY c.remote_ip
         ORDER BY last_seen_at DESC, ip ASC
         LIMIT 
         "#,
@@ -471,15 +508,19 @@ pub async fn list_networks_page(
         r#"
         SELECT COUNT(*)
         FROM networks n
+        LEFT JOIN "groups" g ON g.id = n.group_id
         WHERE 1 = 1
         "#,
     );
+    push_network_group_filter(&mut count_qb, &query.group_filter);
     if let Some(ref pattern) = pattern {
         count_qb.push(" AND (LOWER(n.cidr) LIKE LOWER(");
         count_qb.push_bind(pattern.clone());
         count_qb.push(") ESCAPE '\\' OR LOWER(IFNULL(n.net_name, '')) LIKE LOWER(");
         count_qb.push_bind(pattern.clone());
         count_qb.push(") ESCAPE '\\' OR LOWER(IFNULL(n.organization, '')) LIKE LOWER(");
+        count_qb.push_bind(pattern.clone());
+        count_qb.push(") ESCAPE '\\' OR LOWER(IFNULL(g.name, '')) LIKE LOWER(");
         count_qb.push_bind(pattern.clone());
         count_qb.push(") ESCAPE '\\')");
     }
@@ -495,17 +536,21 @@ pub async fn list_networks_page(
             n.asn AS asn,
             n.organization AS organization,
             n.country AS country,
+            n.group_id AS group_id,
+            g.name AS group_name,
             COUNT(DISTINCT ia.id) AS ip_count,
             COUNT(DISTINCT c.id) AS connection_count,
             MIN(ia.first_seen_at) AS first_seen_at,
             MAX(ia.last_seen_at) AS last_seen_at
         FROM networks n
+        LEFT JOIN "groups" g ON g.id = n.group_id
         LEFT JOIN ip_networks inw ON inw.network_id = n.id
         LEFT JOIN ip_addresses ia ON ia.id = inw.ip_id
         LEFT JOIN connections c ON c.remote_ip = ia.ip
         WHERE 1 = 1
         "#,
     );
+    push_network_group_filter(&mut list_qb, &query.group_filter);
     if let Some(ref pattern) = pattern {
         list_qb.push(" AND (LOWER(n.cidr) LIKE LOWER(");
         list_qb.push_bind(pattern.clone());
@@ -513,11 +558,14 @@ pub async fn list_networks_page(
         list_qb.push_bind(pattern.clone());
         list_qb.push(") ESCAPE '\\' OR LOWER(IFNULL(n.organization, '')) LIKE LOWER(");
         list_qb.push_bind(pattern.clone());
+        list_qb.push(") ESCAPE '\\' OR LOWER(IFNULL(g.name, '')) LIKE LOWER(");
+        list_qb.push_bind(pattern.clone());
         list_qb.push(") ESCAPE '\\')");
     }
     list_qb.push(
         r#"
-        GROUP BY n.id, n.cidr, n.net_range, n.net_name, n.asn, n.organization, n.country
+        GROUP BY n.id, n.cidr, n.net_range, n.net_name, n.asn, n.organization, n.country,
+                 n.group_id, g.name
         ORDER BY connection_count DESC, n.cidr ASC
         LIMIT 
         "#,
@@ -537,6 +585,19 @@ pub async fn list_networks_page(
         limit,
         offset,
     })
+}
+
+fn push_network_group_filter(qb: &mut QueryBuilder<'_, sqlx::Sqlite>, filter: &NetworkGroupFilter) {
+    match filter {
+        NetworkGroupFilter::Any => {}
+        NetworkGroupFilter::Ungrouped => {
+            qb.push(" AND n.group_id IS NULL");
+        }
+        NetworkGroupFilter::Group(id) => {
+            qb.push(" AND n.group_id = ");
+            qb.push_bind(*id);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -707,5 +768,159 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(hit.total, 1);
+    }
+
+    #[tokio::test]
+    async fn list_ip_addresses_includes_manual_without_connections() {
+        let db = Database::open_in_memory().await.unwrap();
+        crate::writes::upsert_ip_address(db.pool(), "198.51.100.50", t(2024, 6, 1, 11, 0, 0))
+            .await
+            .unwrap();
+
+        let page = list_ip_addresses(db.pool(), &EntityListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(page.total, 1);
+        assert_eq!(page.rows[0].ip, "198.51.100.50");
+        assert_eq!(page.rows[0].connection_count, 0);
+    }
+
+    #[tokio::test]
+    async fn list_networks_filters_by_group_and_ungrouped() {
+        let db = Database::open_in_memory().await.unwrap();
+        let seen = t(2024, 6, 1, 11, 0, 0);
+        let group_id = crate::groups::create_group(db.pool(), "OpenAI", seen)
+            .await
+            .unwrap();
+
+        let grouped = crate::writes::upsert_network(
+            db.pool(),
+            &NewNetwork {
+                cidr: "203.0.113.0/24".into(),
+                net_range: None,
+                net_name: Some("GROUPED".into()),
+                organization: None,
+                asn: None,
+                country: None,
+                source: Some("manual".into()),
+                updated_at: seen,
+            },
+        )
+        .await
+        .unwrap();
+        crate::writes::upsert_network(
+            db.pool(),
+            &NewNetwork {
+                cidr: "198.51.100.0/24".into(),
+                net_range: None,
+                net_name: Some("FREE".into()),
+                organization: None,
+                asn: None,
+                country: None,
+                source: Some("manual".into()),
+                updated_at: seen,
+            },
+        )
+        .await
+        .unwrap();
+        crate::groups::set_network_group(db.pool(), grouped, Some(group_id))
+            .await
+            .unwrap();
+
+        let all = list_networks_page(db.pool(), &EntityListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(all.total, 2);
+
+        let by_group = list_networks_page(
+            db.pool(),
+            &EntityListQuery {
+                group_filter: NetworkGroupFilter::Group(group_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_group.total, 1);
+        assert_eq!(by_group.rows[0].cidr, "203.0.113.0/24");
+
+        let ungrouped = list_networks_page(
+            db.pool(),
+            &EntityListQuery {
+                group_filter: NetworkGroupFilter::Ungrouped,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(ungrouped.total, 1);
+        assert_eq!(ungrouped.rows[0].cidr, "198.51.100.0/24");
+    }
+
+    #[tokio::test]
+    async fn forward_dns_domain_links_and_group_on_network() {
+        let db = Database::open_in_memory().await.unwrap();
+        let seen = t(2024, 6, 1, 11, 0, 0);
+
+        upsert_ip_domain(
+            db.pool(),
+            &NewIpDomain {
+                ip: "203.0.113.10".into(),
+                domain: "chatgpt.com".into(),
+                source: "FORWARD_DNS".into(),
+                confidence: Some(0.95),
+                seen_at: seen,
+            },
+        )
+        .await
+        .unwrap();
+
+        store_winning_ip_network(
+            db.pool(),
+            "203.0.113.10",
+            &NewNetwork {
+                cidr: "203.0.113.0/24".into(),
+                net_range: None,
+                net_name: Some("TEST".into()),
+                organization: None,
+                asn: None,
+                country: None,
+                source: Some("rdap".into()),
+                updated_at: seen,
+            },
+            seen,
+        )
+        .await
+        .unwrap();
+
+        let group_id = crate::groups::create_group(db.pool(), "OpenAI", seen)
+            .await
+            .unwrap();
+        crate::groups::set_networks_group_by_cidr(
+            db.pool(),
+            &["203.0.113.0/24".into()],
+            Some(group_id),
+        )
+        .await
+        .unwrap();
+
+        let domains = list_domains(db.pool(), &EntityListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(domains.total, 1);
+        assert_eq!(domains.rows[0].domain, "chatgpt.com");
+        assert_eq!(domains.rows[0].ip_count, 1);
+        assert!(domains.rows[0]
+            .sources
+            .as_deref()
+            .unwrap_or("")
+            .contains("FORWARD_DNS"));
+
+        let networks = list_networks_page(db.pool(), &EntityListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(networks.total, 1);
+        assert_eq!(networks.rows[0].group_id, Some(group_id));
+        assert_eq!(networks.rows[0].group_name.as_deref(), Some("OpenAI"));
     }
 }

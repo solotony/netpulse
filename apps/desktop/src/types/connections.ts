@@ -104,7 +104,10 @@ export const CONNECTION_COLUMNS = [
   { id: "status", label: "Status", sortBy: null },
 ] as const;
 
-function formatEndpoint(ip: string, port: number): string {
+function formatEndpoint(ip: string, port: number, protocol: string): string {
+  if (protocol.toLowerCase() === "icmp" && port === 0) {
+    return ip;
+  }
   return `${ip}:${port}`;
 }
 
@@ -142,8 +145,8 @@ export function mapConnectionRow(
   dateTimeFormat: DateTimeFormatPreference = "iso",
 ): ConnectionTableRow {
   const process = display(row.processName);
-  const localAddress = formatEndpoint(row.localIp, row.localPort);
-  const remoteAddress = formatEndpoint(row.remoteIp, row.remotePort);
+  const localAddress = formatEndpoint(row.localIp, row.localPort, row.protocol);
+  const remoteAddress = formatEndpoint(row.remoteIp, row.remotePort, row.protocol);
   const domain = display(row.domain);
   const network = display(row.network);
   const organization = display(row.organization);
@@ -274,11 +277,30 @@ export function toHistoryInvokeArgs(query: ConnectionsPageQuery): Record<string,
   };
 }
 
+/** Networks page group filter: all groups, ungrouped only, or a specific group id. */
+export type NetworkGroupFilter = "all" | "ungrouped" | number;
+
 /** Builds a default entity list query (processes/IPs/domains/networks). */
 export interface EntityListQuery {
   page: number;
   pageSize: number;
   text?: string;
+  groupFilter?: NetworkGroupFilter;
+}
+
+function normalizeGroupFilter(
+  value: NetworkGroupFilter | string | undefined,
+): NetworkGroupFilter | undefined {
+  if (value === undefined || value === "all" || value === "") return undefined;
+  if (value === "ungrouped" || value === "none") return "ungrouped";
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.floor(value);
+  }
+  if (typeof value === "string") {
+    const id = Number(value);
+    if (Number.isFinite(id) && id > 0) return Math.floor(id);
+  }
+  return undefined;
 }
 
 export function normalizeEntityListQuery(
@@ -292,6 +314,7 @@ export function normalizeEntityListQuery(
     page,
     pageSize,
     text: optionalString(query.text),
+    groupFilter: normalizeGroupFilter(query.groupFilter),
   };
 }
 
@@ -302,6 +325,11 @@ export function toEntityInvokeArgs(query: EntityListQuery): Record<string, unkno
   };
   if (query.text) {
     payload.text = query.text;
+  }
+  if (query.groupFilter === "ungrouped") {
+    payload.groupFilter = "ungrouped";
+  } else if (typeof query.groupFilter === "number") {
+    payload.groupFilter = String(query.groupFilter);
   }
   return { query: payload };
 }

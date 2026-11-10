@@ -7,6 +7,7 @@
 
 mod collector;
 mod diff;
+mod ping_args;
 mod snapshot;
 
 #[cfg(target_os = "macos")]
@@ -15,7 +16,7 @@ mod libproc;
 pub use collector::MacOsCollector;
 pub use diff::DiffEngine;
 pub use snapshot::{
-    FixtureSnapshotSource, SocketKey, SocketObservation, SocketSnapshotSource, SnapshotError,
+    FixtureSnapshotSource, SnapshotError, SocketKey, SocketObservation, SocketSnapshotSource,
 };
 
 #[cfg(target_os = "macos")]

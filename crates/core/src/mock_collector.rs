@@ -6,9 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use collector_api::{
-    CollectorCapabilities, CollectorError, NetworkCollector, Platform,
-};
+use collector_api::{CollectorCapabilities, CollectorError, NetworkCollector, Platform};
 use common::ConnectionEvent;
 use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
@@ -177,6 +175,7 @@ mod tests {
             direction: Direction::Outbound,
             bytes_sent,
             bytes_received: None,
+            remote_hostname: None,
         }
     }
 
@@ -237,9 +236,8 @@ mod tests {
 
     #[tokio::test]
     async fn start_failure_surfaces_collector_error() {
-        let mut collector = MockCollector::new(Vec::new()).fail_next_start(CollectorError::Failed(
-            "injected failure".into(),
-        ));
+        let mut collector = MockCollector::new(Vec::new())
+            .fail_next_start(CollectorError::Failed("injected failure".into()));
         let (tx, _rx) = mpsc::channel(1);
 
         let err = collector.start(tx.clone()).await.expect_err("must fail");
@@ -254,8 +252,12 @@ mod tests {
 
     #[tokio::test]
     async fn duplicate_scripted_events_are_not_dropped() {
-        let duplicate =
-            sample_event(ConnectionEventType::NewConnection, 80, Some("browser"), None);
+        let duplicate = sample_event(
+            ConnectionEventType::NewConnection,
+            80,
+            Some("browser"),
+            None,
+        );
         let script = vec![duplicate.clone(), duplicate.clone()];
         let mut collector = MockCollector::new(script.clone());
         let (tx, mut rx) = mpsc::channel(8);

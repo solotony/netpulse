@@ -3,8 +3,8 @@
 use chrono::{DateTime, TimeZone, Utc};
 use collector_api::NetworkCollector;
 use common::{ConnectionEvent, ConnectionEventType, Direction, IpAddress, Protocol};
-use monitor_core::{EventPipeline, MockCollector};
 use database::Database;
+use monitor_core::{EventPipeline, MockCollector};
 use serde::Serialize;
 use sqlx::FromRow;
 use tokio::sync::mpsc;
@@ -107,6 +107,7 @@ fn scripted_events() -> Vec<ConnectionEvent> {
             remote_ip: IpAddress::parse("93.184.216.34").unwrap(),
             remote_port: 443,
             direction: Direction::Outbound,
+            remote_hostname: None,
             bytes_sent: Some(128),
             bytes_received: Some(4096),
         },
@@ -123,6 +124,7 @@ fn scripted_events() -> Vec<ConnectionEvent> {
             remote_ip: IpAddress::parse("1.1.1.1").unwrap(),
             remote_port: 443,
             direction: Direction::Outbound,
+            remote_hostname: None,
             bytes_sent: Some(256),
             bytes_received: Some(8192),
         },
@@ -139,6 +141,7 @@ fn scripted_events() -> Vec<ConnectionEvent> {
             remote_ip: IpAddress::parse("8.8.8.8").unwrap(),
             remote_port: 53,
             direction: Direction::Outbound,
+            remote_hostname: None,
             bytes_sent: Some(64),
             bytes_received: Some(128),
         },
@@ -155,6 +158,7 @@ fn scripted_events() -> Vec<ConnectionEvent> {
             remote_ip: IpAddress::parse("203.0.113.50").unwrap(),
             remote_port: 22,
             direction: Direction::Outbound,
+            remote_hostname: None,
             bytes_sent: Some(512),
             bytes_received: Some(1024),
         },
@@ -171,6 +175,7 @@ fn scripted_events() -> Vec<ConnectionEvent> {
             remote_ip: IpAddress::parse("203.0.113.50").unwrap(),
             remote_port: 22,
             direction: Direction::Outbound,
+            remote_hostname: None,
             bytes_sent: Some(1024),
             bytes_received: Some(2048),
         },

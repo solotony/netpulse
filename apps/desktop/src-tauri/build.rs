@@ -4,7 +4,11 @@ fn main() {
     // `.icns` would otherwise leave macOS showing the previous icon.
     for path in ["icons/icon.icns", "icons/icon.png", "icons/icon.ico"] {
         println!("cargo:rerun-if-changed={path}");
-        println!("cargo:rustc-env=NETPULSE_ICON_{}={}", env_key(path), icon_stamp(path));
+        println!(
+            "cargo:rustc-env=NETPULSE_ICON_{}={}",
+            env_key(path),
+            icon_stamp(path)
+        );
     }
     tauri_build::build()
 }

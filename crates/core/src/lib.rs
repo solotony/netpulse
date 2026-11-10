@@ -5,9 +5,7 @@ mod monitoring;
 mod pipeline;
 
 pub use mock_collector::MockCollector;
-pub use monitoring::{
-    MonitoringController, MonitoringError, MonitoringState, MonitoringStatus,
-};
+pub use monitoring::{MonitoringController, MonitoringError, MonitoringState, MonitoringStatus};
 pub use pipeline::{EventPipeline, PipelineError, ProcessOutcome, RemoteIpObserver};
 
 /// Crate identity used by unit tests and diagnostics.

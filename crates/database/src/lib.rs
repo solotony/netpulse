@@ -3,6 +3,7 @@
 mod entities;
 mod error;
 mod export;
+mod groups;
 mod maintenance;
 mod models;
 mod probe;
@@ -26,17 +27,22 @@ pub use models::{
 };
 pub use entities::{
     list_domains, list_ip_addresses, list_networks_page, list_processes, DomainListPage,
-    DomainListRow, EntityListQuery, IpListPage, IpListRow, NetworkListPage, NetworkListRow,
-    ProcessListPage, ProcessListRow,
+    DomainListRow, EntityListQuery, IpListPage, IpListRow, NetworkGroupFilter, NetworkListPage,
+    NetworkListRow, ProcessListPage, ProcessListRow,
 };
 pub use export::{
     export_connection_history, export_connection_history_to_path, describe_export_filter,
     escape_tsv_field, ExportFormat, ExportOptions, ExportSummary, EXPORT_CHUNK_SIZE,
     TSV_COLUMNS,
 };
+pub use groups::{
+    create_group, delete_group, get_group, get_group_by_name, list_groups, list_networks_for_group,
+    rename_group, set_network_group, set_networks_group_by_cidr, GroupListRow, GroupNetworkRow,
+    GroupRow,
+};
 pub use probe::{
     app_key_from_path, app_key_kind, diff_probe, list_probe_apps, AppKeyKind, ProbeAppRow,
-    ProbeDiffQuery, ProbeDiffResult, ProbeDiffRow,
+    ProbeDiffQuery, ProbeDiffResult, ProbeDiffRow, ProbeIpOrigin,
 };
 pub use queries::{
     query_connection_history, ConnectionHistoryFilter, ConnectionHistoryPage,
@@ -144,7 +150,7 @@ impl Database {
         database_info(self.pool(), self.path()).await
     }
 
-    /// Deletes all connection history (events cascade).
+    /// Deletes connection history and process rows. Enrichment tables stay.
     pub async fn clear_connection_history(&self) -> Result<u64, DatabaseError> {
         clear_connection_history(self.pool()).await
     }
@@ -259,6 +265,19 @@ impl Database {
         query: &EntityListQuery,
     ) -> Result<NetworkListPage, DatabaseError> {
         entities::list_networks_page(&self.pool, query).await
+    }
+
+    /// Lists user-defined groups with subnet counts.
+    pub async fn list_groups(&self) -> Result<Vec<GroupListRow>, DatabaseError> {
+        groups::list_groups(&self.pool).await
+    }
+
+    /// Lists networks belonging to a group.
+    pub async fn list_networks_for_group(
+        &self,
+        group_id: i64,
+    ) -> Result<Vec<GroupNetworkRow>, DatabaseError> {
+        groups::list_networks_for_group(&self.pool, group_id).await
     }
 }
 

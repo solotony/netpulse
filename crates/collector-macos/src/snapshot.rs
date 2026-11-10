@@ -15,6 +15,8 @@ pub struct SocketObservation {
     pub remote_ip: IpAddress,
     pub remote_port: u16,
     pub direction: Direction,
+    /// Name from the owning process when the socket foreign address was empty.
+    pub remote_hostname: Option<String>,
 }
 
 impl SocketObservation {

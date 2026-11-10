@@ -26,9 +26,13 @@ Unit tests exercise the diff engine with fixture snapshots and **do not** call r
 
 UDP has no reliable teardown signal under polling. A 5-tuple flow (plus owning PID) stays open while it is **reobserved**. If it is not seen for **30 seconds**, the collector emits `ConnectionClosed`.
 
+### ICMP (`ping`)
+
+macOS `ping` uses an unconnected ICMP datagram socket, so libproc reports `*.*` and no foreign address. When that socket belongs to `ping` or `ping6`, the collector reads the process arguments, resolves the destination, and records an outbound ICMP flow. The typed hostname is stored as an observed domain. Other unconnected ICMP sockets stay skipped.
+
 ### Short connections
 
-Connections that open and close **between poll ticks may be missed**. Monitoring is best-effort for this polling path, not complete event-driven capture.
+Connections that open and close **between poll ticks may be missed**. A one-shot `ping -c 1` can exit between polls. Monitoring is best-effort for this polling path, not complete event-driven capture.
 
 ## Capabilities
 
@@ -50,5 +54,5 @@ Byte counters on emitted events are always `None`.
 ## Limitations
 
 - Requires sufficient privileges to inspect other processes’ FDs; inaccessible processes leave name / path / start time unset.
-- Listening / unconnected sockets (no remote peer) are skipped.
+- Listening sockets, and unconnected sockets whose peer cannot be recovered, are skipped. `ping` / `ping6` destinations are taken from the process arguments.
 - No Network Extension entitlements, code signing, or system-extension install steps in the MVP path.

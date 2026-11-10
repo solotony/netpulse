@@ -1,14 +1,16 @@
-//! Domain resolution and reverse DNS for remote IP addresses.
+//! Domain resolution: reverse DNS (PTR) and forward DNS (A / AAAA).
 //!
-//! MVP domain discovery is **reverse DNS (PTR) only** via an injectable resolver
-//! trait (`hickory-resolver` in production, mocks in tests). Observed DNS / OS
-//! cache correlation is intentionally unavailable.
+//! Background discovery remains PTR-based. Manual domain entry uses forward
+//! lookups via [`ForwardResolver`]. Observed DNS / OS cache correlation is
+//! intentionally unavailable.
 
 mod error;
+mod forward;
 mod ptr;
 mod worker;
 
 pub use error::DnsError;
+pub use forward::{ForwardResolver, HickoryForwardResolver};
 pub use ptr::{HickoryPtrResolver, PtrResolver};
 pub use worker::{DnsConfig, DnsHandle, DnsWorker};
 
@@ -21,11 +23,16 @@ pub const CRATE_NAME: &str = "dns-resolver";
 /// user visited, so reliability is moderate.
 pub const REVERSE_DNS_CONFIDENCE: f64 = 0.5;
 
-/// MVP domain discovery sources.
+/// Confidence assigned to forward-DNS associations from manual domain entry.
+pub const FORWARD_DNS_CONFIDENCE: f64 = 0.95;
+
+/// Domain discovery sources persisted in `ip_domains.source`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomainSource {
-    /// Reverse DNS (PTR) lookup — only source enabled for the DNS MVP.
+    /// Reverse DNS (PTR) lookup.
     ReverseDns,
+    /// Forward DNS (A / AAAA) from manual domain entry.
+    ForwardDns,
 }
 
 impl DomainSource {
@@ -33,6 +40,7 @@ impl DomainSource {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ReverseDns => "REVERSE_DNS",
+            Self::ForwardDns => "FORWARD_DNS",
         }
     }
 }
@@ -48,8 +56,9 @@ mod tests {
     }
 
     #[test]
-    fn mvp_source_is_reverse_dns() {
+    fn source_labels() {
         assert_eq!(DomainSource::ReverseDns.as_str(), "REVERSE_DNS");
+        assert_eq!(DomainSource::ForwardDns.as_str(), "FORWARD_DNS");
     }
 
     #[test]

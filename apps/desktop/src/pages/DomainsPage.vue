@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from "vue";
 import AppShell from "../layouts/AppShell.vue";
 import ConnectionHistoryPanel from "../components/ConnectionHistoryPanel.vue";
+import ManualAddBar from "../components/ManualAddBar.vue";
 import { fetchDomains, type DomainRow } from "../services/connections";
 import type { ConnectionsFilter } from "../types/connections";
 
@@ -49,6 +50,12 @@ onMounted(() => {
   <AppShell>
     <div class="layout" :class="{ split: selected }">
       <section class="main-pane">
+        <ManualAddBar
+          kind="domain"
+          placeholder="Add domain (e.g. chatgpt.com)…"
+          @added="load(true)"
+        />
+
         <form class="toolbar" @submit.prevent="load(true)">
           <input v-model="text" type="search" placeholder="Search domains…" />
           <button type="submit" :disabled="loading">{{ loading ? "Loading…" : "Search" }}</button>

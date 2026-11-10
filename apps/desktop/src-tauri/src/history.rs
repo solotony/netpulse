@@ -3,8 +3,9 @@
 use chrono::{DateTime, Utc};
 use database::{
     get_bool_setting, ConnectionHistoryFilter, ConnectionHistoryQuery, ConnectionHistoryRow,
-    ConnectionSortColumn, DomainListRow, EntityListQuery, IpListRow, NetworkListRow, ProcessListRow,
-    SortDirection, DEFAULT_PAGE_SIZE, SETTING_ASN_INFO, SETTING_COUNTRY_INFO,
+    ConnectionSortColumn, DomainListRow, EntityListQuery, IpListRow, NetworkGroupFilter,
+    NetworkListRow, ProcessListRow, SortDirection, DEFAULT_PAGE_SIZE, SETTING_ASN_INFO,
+    SETTING_COUNTRY_INFO,
 };
 use serde::{Deserialize, Serialize};
 
@@ -138,7 +139,11 @@ pub(crate) fn parse_rfc3339(value: Option<&str>) -> Result<Option<DateTime<Utc>>
 }
 
 fn parse_sort_column(raw: Option<&str>) -> ConnectionSortColumn {
-    match raw.map(str::trim).map(|s| s.to_ascii_lowercase()).as_deref() {
+    match raw
+        .map(str::trim)
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("endedat") | Some("ended_at") => ConnectionSortColumn::EndedAt,
         Some("process") | Some("processname") | Some("process_name") => {
             ConnectionSortColumn::ProcessName
@@ -159,7 +164,11 @@ fn parse_sort_column(raw: Option<&str>) -> ConnectionSortColumn {
 }
 
 fn parse_sort_dir(raw: Option<&str>) -> SortDirection {
-    match raw.map(str::trim).map(|s| s.to_ascii_lowercase()).as_deref() {
+    match raw
+        .map(str::trim)
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
         Some("asc") => SortDirection::Asc,
         _ => SortDirection::Desc,
     }
@@ -218,7 +227,11 @@ pub async fn query_connection_history(
         .map_err(|err| format!("query connection history: {err}"))?;
 
     Ok(ConnectionsPage {
-        rows: result.rows.into_iter().map(ConnectionTableRow::from).collect(),
+        rows: result
+            .rows
+            .into_iter()
+            .map(ConnectionTableRow::from)
+            .collect(),
         page,
         page_size,
         total: result.total,
@@ -232,6 +245,19 @@ pub struct EntityQueryDto {
     pub text: Option<String>,
     pub page: Option<u32>,
     pub page_size: Option<u32>,
+    /// Networks only: `"all"` | `"ungrouped"` | decimal group id string.
+    pub group_filter: Option<String>,
+}
+
+fn parse_group_filter(raw: Option<&str>) -> NetworkGroupFilter {
+    match raw.map(str::trim).filter(|s| !s.is_empty()) {
+        None | Some("all") => NetworkGroupFilter::Any,
+        Some("ungrouped") | Some("none") => NetworkGroupFilter::Ungrouped,
+        Some(value) => match value.parse::<i64>() {
+            Ok(id) if id > 0 => NetworkGroupFilter::Group(id),
+            _ => NetworkGroupFilter::Any,
+        },
+    }
 }
 
 fn to_entity_query(dto: EntityQueryDto) -> (EntityListQuery, u32, u32) {
@@ -244,6 +270,7 @@ fn to_entity_query(dto: EntityQueryDto) -> (EntityListQuery, u32, u32) {
         text: dto.text,
         limit: page_size,
         offset: u64::from((page - 1) * page_size),
+        group_filter: parse_group_filter(dto.group_filter.as_deref()),
     };
     (query, page, page_size)
 }
@@ -464,6 +491,8 @@ pub struct NetworkRowDto {
     pub asn: Option<i64>,
     pub organization: Option<String>,
     pub country: Option<String>,
+    pub group_id: Option<i64>,
+    pub group_name: Option<String>,
     pub ip_count: i64,
     pub connection_count: i64,
     pub first_seen_at: Option<String>,
@@ -480,6 +509,8 @@ impl From<NetworkListRow> for NetworkRowDto {
             asn: row.asn,
             organization: row.organization,
             country: row.country,
+            group_id: row.group_id,
+            group_name: row.group_name,
             ip_count: row.ip_count,
             connection_count: row.connection_count,
             first_seen_at: row.first_seen_at.map(|t| t.to_rfc3339()),

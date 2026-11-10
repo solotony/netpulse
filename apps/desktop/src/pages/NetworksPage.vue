@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import AppShell from "../layouts/AppShell.vue";
 import ConnectionHistoryPanel from "../components/ConnectionHistoryPanel.vue";
+import ManualAddBar from "../components/ManualAddBar.vue";
 import { fetchNetworks, type NetworkRow } from "../services/connections";
-import type { ConnectionsFilter } from "../types/connections";
+import { fetchGroups, setNetworkGroup, type GroupRow } from "../services/manual";
+import type { ConnectionsFilter, NetworkGroupFilter } from "../types/connections";
 
 const loading = ref(false);
 const error = ref<string | null>(null);
@@ -12,7 +14,20 @@ const total = ref(0);
 const page = ref(1);
 const pageSize = 50;
 const text = ref("");
+/** Toolbar filter: "" = all, "ungrouped", or group id string. */
+const groupFilter = ref("");
 const selected = ref<NetworkRow | null>(null);
+const groups = ref<GroupRow[]>([]);
+const assignGroupId = ref<string>("");
+const assignBusy = ref(false);
+const assignError = ref<string | null>(null);
+
+function resolvedGroupFilter(): NetworkGroupFilter | undefined {
+  if (!groupFilter.value || groupFilter.value === "all") return undefined;
+  if (groupFilter.value === "ungrouped") return "ungrouped";
+  const id = Number(groupFilter.value);
+  return Number.isFinite(id) && id > 0 ? id : undefined;
+}
 
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / pageSize)));
 const historyFilter = computed<ConnectionsFilter | null>(() =>
@@ -23,6 +38,14 @@ const historyTitle = computed(() => {
   return selected.value.netName?.trim() || selected.value.cidr;
 });
 
+async function loadGroups() {
+  try {
+    groups.value = await fetchGroups();
+  } catch {
+    groups.value = [];
+  }
+}
+
 async function load(resetPage = false) {
   if (resetPage) page.value = 1;
   loading.value = true;
@@ -32,9 +55,13 @@ async function load(resetPage = false) {
       page: page.value,
       pageSize,
       text: text.value,
+      groupFilter: resolvedGroupFilter(),
     });
     rows.value = result.rows;
     total.value = result.total;
+    if (selected.value) {
+      selected.value = rows.value.find((r) => r.id === selected.value?.id) ?? null;
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : String(err);
     rows.value = [];
@@ -44,7 +71,29 @@ async function load(resetPage = false) {
   }
 }
 
+async function applyGroup() {
+  if (!selected.value || assignBusy.value) return;
+  assignBusy.value = true;
+  assignError.value = null;
+  try {
+    const groupId = assignGroupId.value ? Number(assignGroupId.value) : null;
+    await setNetworkGroup(selected.value.id, groupId);
+    await loadGroups();
+    await load();
+  } catch (err) {
+    assignError.value = err instanceof Error ? err.message : String(err);
+  } finally {
+    assignBusy.value = false;
+  }
+}
+
+watch(selected, (row) => {
+  assignGroupId.value = row?.groupId != null ? String(row.groupId) : "";
+  assignError.value = null;
+});
+
 onMounted(() => {
+  void loadGroups();
   void load();
 });
 </script>
@@ -53,19 +102,51 @@ onMounted(() => {
   <AppShell>
     <div class="layout" :class="{ split: selected }">
       <section class="main-pane">
+        <ManualAddBar
+          kind="cidr"
+          placeholder="Add subnet CIDR (e.g. 203.0.113.0/24)…"
+          @added="
+            loadGroups();
+            load(true);
+          "
+        />
+
         <form class="toolbar" @submit.prevent="load(true)">
-          <input v-model="text" type="search" placeholder="Search CIDR, name, org…" />
+          <input v-model="text" type="search" placeholder="Search CIDR, name, org, group…" />
+          <select
+            v-model="groupFilter"
+            aria-label="Filter by group"
+            :disabled="loading"
+            @change="load(true)"
+          >
+            <option value="">All groups</option>
+            <option value="ungrouped">No group</option>
+            <option v-for="g in groups" :key="g.id" :value="String(g.id)">{{ g.name }}</option>
+          </select>
           <button type="submit" :disabled="loading">{{ loading ? "Loading…" : "Search" }}</button>
           <span class="meta">{{ total }} network{{ total === 1 ? "" : "s" }}</span>
         </form>
 
         <p v-if="error" class="error">{{ error }}</p>
 
+        <div v-if="selected" class="assign-bar">
+          <span class="meta">Group for {{ selected.cidr }}:</span>
+          <select v-model="assignGroupId" :disabled="assignBusy">
+            <option value="">No group</option>
+            <option v-for="g in groups" :key="g.id" :value="String(g.id)">{{ g.name }}</option>
+          </select>
+          <button type="button" :disabled="assignBusy" @click="applyGroup">
+            {{ assignBusy ? "Saving…" : "Set group" }}
+          </button>
+          <p v-if="assignError" class="error">{{ assignError }}</p>
+        </div>
+
         <div class="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>CIDR</th>
+                <th>Group</th>
                 <th>NetRange</th>
                 <th>NetName</th>
                 <th>ASN</th>
@@ -79,7 +160,7 @@ onMounted(() => {
             </thead>
             <tbody>
               <tr v-if="!loading && rows.length === 0">
-                <td colspan="10" class="empty">No networks yet.</td>
+                <td colspan="11" class="empty">No networks yet.</td>
               </tr>
               <tr
                 v-for="row in rows"
@@ -88,6 +169,7 @@ onMounted(() => {
                 @click="selected = row"
               >
                 <td class="mono">{{ row.cidr }}</td>
+                <td>{{ row.groupName || "—" }}</td>
                 <td class="mono">{{ row.netRange || "—" }}</td>
                 <td>{{ row.netName || "—" }}</td>
                 <td>{{ row.asn ?? "—" }}</td>
@@ -148,11 +230,13 @@ onMounted(() => {
 }
 
 .toolbar,
-.pager {
+.pager,
+.assign-bar {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
 
 .pager {
@@ -160,9 +244,9 @@ onMounted(() => {
   margin-bottom: 0;
 }
 
-.toolbar input {
-  flex: 1;
-  min-width: 160px;
+.toolbar input,
+.toolbar select,
+.assign-bar select {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 8px;
@@ -170,6 +254,15 @@ onMounted(() => {
   font-size: 12px;
   background: var(--bg-elevated);
   color: var(--text);
+}
+
+.toolbar input {
+  flex: 1;
+  min-width: 160px;
+}
+
+.toolbar select {
+  min-width: 140px;
 }
 
 button {

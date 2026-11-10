@@ -5,9 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use collector_api::{
-    CollectorCapabilities, CollectorError, NetworkCollector, Platform,
-};
+use collector_api::{CollectorCapabilities, CollectorError, NetworkCollector, Platform};
 use common::ConnectionEvent;
 use process_info::ProcessSource;
 use tokio::sync::mpsc;

@@ -70,6 +70,13 @@ pub struct ConnectionEvent {
 
     pub bytes_sent: Option<u64>,
     pub bytes_received: Option<u64>,
+
+    /// Hostname the process addressed when the socket has no foreign name.
+    ///
+    /// Set for unconnected ICMP such as `ping host`. Absent for numeric
+    /// targets and for flows whose socket already carries the remote address.
+    #[serde(default)]
+    pub remote_hostname: Option<String>,
 }
 
 impl ConnectionEvent {
